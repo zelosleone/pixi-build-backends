@@ -1,6 +1,6 @@
 recipe:
   name: pixi-build
-  version: "0.0.1"
+  version: "${{ env.get('RECIPE_VERSION', default='0.1.0dev') }}"
 
 source:
   path: .
