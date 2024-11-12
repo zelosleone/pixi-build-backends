@@ -1,4 +1,9 @@
-use std::{collections::BTreeMap, path::Path, str::FromStr, sync::Arc};
+use std::{
+    collections::BTreeMap,
+    path::{Path, PathBuf},
+    str::FromStr,
+    sync::Arc,
+};
 
 use chrono::Utc;
 use miette::{Context, IntoDiagnostic};
@@ -14,7 +19,7 @@ use pixi_build_types::{
         conda_metadata::{CondaMetadataParams, CondaMetadataResult},
         initialize::{InitializeParams, InitializeResult},
     },
-    BackendCapabilities, CondaPackageMetadata, FrontendCapabilities,
+    BackendCapabilities, CondaPackageMetadata, FrontendCapabilities, PlatformAndVirtualPackages,
 };
 use pixi_manifest::{Dependencies, Manifest, SpecType};
 use pixi_spec::PixiSpec;
@@ -22,7 +27,9 @@ use rattler_build::{
     build::run_build,
     console_utils::LoggingOutputHandler,
     hash::HashInfo,
-    metadata::{BuildConfiguration, Directories, Output, PackagingSettings},
+    metadata::{
+        BuildConfiguration, Directories, Output, PackagingSettings, PlatformWithVirtualPackages,
+    },
     recipe::{
         parser::{Build, Dependency, Package, PathSource, Requirements, ScriptContent, Source},
         Recipe,
@@ -34,14 +41,15 @@ use rattler_conda_types::{
     package::ArchiveType, ChannelConfig, MatchSpec, NoArchType, PackageName, Platform,
 };
 use rattler_package_streaming::write::CompressionLevel;
+use rattler_virtual_packages::VirtualPackageOverrides;
 use reqwest::Url;
-use tempfile::tempdir;
 
 use crate::build_script::{BuildPlatform, BuildScriptContext, Installer};
 
 pub struct PythonBuildBackend {
     logging_output_handler: LoggingOutputHandler,
     manifest: Manifest,
+    cache_dir: Option<PathBuf>,
 }
 
 impl PythonBuildBackend {
@@ -60,6 +68,7 @@ impl PythonBuildBackend {
     pub fn new(
         manifest_path: &Path,
         logging_output_handler: LoggingOutputHandler,
+        cache_dir: Option<PathBuf>,
     ) -> miette::Result<Self> {
         // Load the manifest from the source directory
         let manifest = Manifest::from_path(manifest_path).with_context(|| {
@@ -69,6 +78,7 @@ impl PythonBuildBackend {
         Ok(Self {
             manifest,
             logging_output_handler,
+            cache_dir,
         })
     }
 
@@ -88,6 +98,7 @@ impl PythonBuildBackend {
     /// recipe.
     fn requirements(
         &self,
+        host_platform: Platform,
         channel_config: &ChannelConfig,
     ) -> miette::Result<(Requirements, Installer)> {
         let mut requirements = Requirements::default();
@@ -97,17 +108,17 @@ impl PythonBuildBackend {
         let run_dependencies = Dependencies::from(
             default_features
                 .iter()
-                .filter_map(|f| f.dependencies(Some(SpecType::Run), None)),
+                .filter_map(|f| f.dependencies(SpecType::Run, Some(host_platform))),
         );
         let mut host_dependencies = Dependencies::from(
             default_features
                 .iter()
-                .filter_map(|f| f.dependencies(Some(SpecType::Host), None)),
+                .filter_map(|f| f.dependencies(SpecType::Host, Some(host_platform))),
         );
         let build_dependencies = Dependencies::from(
             default_features
                 .iter()
-                .filter_map(|f| f.dependencies(Some(SpecType::Build), None)),
+                .filter_map(|f| f.dependencies(SpecType::Build, Some(host_platform))),
         );
 
         // Determine the installer to use
@@ -164,7 +175,11 @@ impl PythonBuildBackend {
     }
 
     /// Constructs a [`Recipe`] from the current manifest.
-    fn recipe(&self, channel_config: &ChannelConfig) -> miette::Result<Recipe> {
+    fn recipe(
+        &self,
+        host_platform: Platform,
+        channel_config: &ChannelConfig,
+    ) -> miette::Result<Recipe> {
         let manifest_root = self
             .manifest
             .path
@@ -182,7 +197,7 @@ impl PythonBuildBackend {
         let noarch_type = NoArchType::python();
 
         // TODO: Read from config / project.
-        let (requirements, installer) = self.requirements(channel_config)?;
+        let (requirements, installer) = self.requirements(host_platform, channel_config)?;
         let build_platform = Platform::current();
         let build_number = 0;
 
@@ -247,6 +262,9 @@ impl PythonBuildBackend {
         &self,
         recipe: &Recipe,
         channels: Vec<Url>,
+        build_platform: Option<PlatformAndVirtualPackages>,
+        host_platform: Option<PlatformAndVirtualPackages>,
+        work_directory: &Path,
     ) -> miette::Result<BuildConfiguration> {
         // Parse the package name from the manifest
         let Some(name) = self.manifest.parsed.project.name.clone() else {
@@ -254,25 +272,43 @@ impl PythonBuildBackend {
         };
         let name = PackageName::from_str(&name).into_diagnostic()?;
 
-        // TODO: Setup defaults
-        let output_dir = tempdir()
-            .into_diagnostic()
-            .context("failed to create temporary directory")?;
-        std::fs::create_dir_all(&output_dir)
+        std::fs::create_dir_all(work_directory)
             .into_diagnostic()
             .context("failed to create output directory")?;
         let directories = Directories::setup(
             name.as_normalized(),
             self.manifest.path.as_path(),
-            output_dir.path(),
-            false,
+            work_directory,
+            true,
             &Utc::now(),
         )
         .into_diagnostic()
         .context("failed to setup build directories")?;
 
-        let host_platform = Platform::current();
-        let build_platform = Platform::current();
+        let build_platform = build_platform.map(|p| PlatformWithVirtualPackages {
+            platform: p.platform,
+            virtual_packages: p.virtual_packages.unwrap_or_default(),
+        });
+
+        let host_platform = host_platform.map(|p| PlatformWithVirtualPackages {
+            platform: p.platform,
+            virtual_packages: p.virtual_packages.unwrap_or_default(),
+        });
+
+        let (build_platform, host_platform) = match (build_platform, host_platform) {
+            (Some(build_platform), Some(host_platform)) => (build_platform, host_platform),
+            (build_platform, host_platform) => {
+                let current_platform =
+                    rattler_build::metadata::PlatformWithVirtualPackages::detect(
+                        &VirtualPackageOverrides::from_env(),
+                    )
+                    .into_diagnostic()?;
+                (
+                    build_platform.unwrap_or_else(|| current_platform.clone()),
+                    host_platform.unwrap_or(current_platform),
+                )
+            }
+        };
 
         let variant = BTreeMap::new();
 
@@ -360,10 +396,27 @@ impl Protocol for PythonBuildBackend {
                 .context("failed to determine channels from the manifest")?,
         };
 
+        let host_platform = params
+            .host_platform
+            .as_ref()
+            .map(|p| p.platform)
+            .unwrap_or(Platform::current());
+        if !self.manifest.supports_target_platform(host_platform) {
+            miette::bail!("the project does not support the target platform ({host_platform})");
+        }
+
         // TODO: Determine how and if we can determine this from the manifest.
-        let recipe = self.recipe(&channel_config)?;
+        let recipe = self.recipe(host_platform, &channel_config)?;
         let output = Output {
-            build_configuration: self.build_configuration(&recipe, channels).await?,
+            build_configuration: self
+                .build_configuration(
+                    &recipe,
+                    channels,
+                    params.build_platform,
+                    params.host_platform,
+                    &params.work_directory,
+                )
+                .await?,
             recipe,
             finalized_dependencies: None,
             finalized_cache_dependencies: None,
@@ -373,6 +426,7 @@ impl Protocol for PythonBuildBackend {
             extra_meta: None,
         };
         let tool_config = Configuration::builder()
+            .with_opt_cache_dir(self.cache_dir.clone())
             .with_logging_output_handler(self.logging_output_handler.clone())
             .with_channel_config(channel_config.clone())
             .with_testing(false)
@@ -435,9 +489,20 @@ impl Protocol for PythonBuildBackend {
                 .context("failed to determine channels from the manifest")?,
         };
 
-        let recipe = self.recipe(&channel_config)?;
+        let host_platform = params
+            .host_platform
+            .as_ref()
+            .map(|p| p.platform)
+            .unwrap_or_else(Platform::current);
+        if !self.manifest.supports_target_platform(host_platform) {
+            miette::bail!("the project does not support the target platform ({host_platform})");
+        }
+
+        let recipe = self.recipe(host_platform, &channel_config)?;
         let output = Output {
-            build_configuration: self.build_configuration(&recipe, channels).await?,
+            build_configuration: self
+                .build_configuration(&recipe, channels, None, None, &params.work_directory)
+                .await?,
             recipe,
             finalized_dependencies: None,
             finalized_cache_dependencies: None,
@@ -447,6 +512,7 @@ impl Protocol for PythonBuildBackend {
             extra_meta: None,
         };
         let tool_config = Configuration::builder()
+            .with_opt_cache_dir(self.cache_dir.clone())
             .with_logging_output_handler(self.logging_output_handler.clone())
             .with_channel_config(channel_config.clone())
             .with_testing(false)
@@ -485,6 +551,7 @@ impl ProtocolFactory for PythonBuildBackendFactory {
         let instance = PythonBuildBackend::new(
             params.manifest_path.as_path(),
             self.logging_output_handler.clone(),
+            params.cache_directory,
         )?;
 
         let capabilities = instance.capabilites(&params.capabilities);
