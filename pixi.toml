@@ -36,6 +36,12 @@ run = { cmd = "cargo run", inputs = [
 ], outputs = [
     "target/debug/**",
 ] }
+
+
+install-pixi-build-python = { cmd = "cargo install --path crates/pixi-build --bin pixi-build-python --locked"}
+install-pixi-build-cmake = { cmd = "cargo install --path crates/pixi-build --bin pixi-build-cmake --locked"}
+install-pixi-backends = { depends-on = ["install-pixi-build-python", "install-pixi-build-cmake"] }
+
 [dependencies]
 rust = "~=1.80.1"
 python = ">=3.12.4,<4"
