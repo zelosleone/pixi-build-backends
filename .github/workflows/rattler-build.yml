@@ -23,7 +23,7 @@ jobs:
         run: |
           VERSION="0.1.0dev${{ env.datetime }}"
           echo "Generated version: $VERSION"
-          echo "::set-output name=version::$VERSION"
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
 
   rattler-build:
     needs: generate_version
