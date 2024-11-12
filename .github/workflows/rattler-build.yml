@@ -35,12 +35,12 @@ jobs:
         run: |
           git config --global core.longpaths true
         shell: bash
-      - name: Get GitHub App Token
+      - name: Get GitHub ID Token
         id: get_token
         uses: actions/github-script@v6
         with:
           script: |
-            const token = await core.getIDToken('prefix.dev')
+            const token = await core.getIDToken()
             core.setOutput('token', token)
       - name: Validate JWT
         run: |
