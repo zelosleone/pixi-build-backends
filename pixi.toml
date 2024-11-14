@@ -51,7 +51,7 @@ pydantic = ">=2.8.2,<3"
 ruff = ">=0.5.7,<0.6"
 
 [feature.build-self.dependencies]
-rattler-build = ">=0.29.0,<1"
+rattler-build = ">=0.30.0,<1"
 
 [feature.schema.tasks]
 generate-schema = "python schema/model.py > schema/schema.json"

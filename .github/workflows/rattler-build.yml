@@ -50,32 +50,13 @@ jobs:
         run: |
           git config --global core.longpaths true
         shell: bash
-      - name: Get GitHub App Token
-        if: github.event_name == 'push'
-        id: get_token
-        uses: actions/github-script@v6
-        with:
-          script: |
-            const token = await core.getIDToken('prefix.dev')
-            core.setOutput('token', token)
-      - name: Validate JWT
-        if: github.event_name == 'push'
-        run: |
-          TOKEN="${{ steps.get_token.outputs.token }}"
-          RESPONSE=$(curl -s -X POST                      \
-                https://prefix.dev/api/oidc/mint_token \
-                -H "Content-Type: application/json"        \
-                --data "{\"token\": \"$TOKEN\"}")
-          # mask the response
-          echo "::add-mask::$RESPONSE"
-          echo "PREFIX_API_KEY=$RESPONSE" >> $GITHUB_ENV
       - name: Run rattler-build
         shell: bash
         env:
           TARGET_PLATFORM: ${{ matrix.target }}
           RECIPE_VERSION: ${{ needs.generate_version.outputs.version }}
         run: |
-          pixi r -e build-self rattler-build build --output-dir=$RUNNER_TEMP --target-platform=${{ env.TARGET_PLATFORM }} --experimental
+          pixi r -e build-self rattler-build build --output-dir=$RUNNER_TEMP --target-platform=${{ env.TARGET_PLATFORM }} --experimental  --no-include-recipe
       - name: Upload all packages
         shell: bash
         # do not upload on PR
