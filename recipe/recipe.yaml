@@ -3,7 +3,7 @@ recipe:
   version: "${{ env.get('RECIPE_VERSION', default='0.1.0dev') }}"
 
 source:
-  path: .
+  path: ..
 
 cache:
   requirements:

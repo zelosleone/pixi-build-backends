@@ -56,7 +56,7 @@ jobs:
           TARGET_PLATFORM: ${{ matrix.target }}
           RECIPE_VERSION: ${{ needs.generate_version.outputs.version }}
         run: |
-          pixi r -e build-self rattler-build build --output-dir=$RUNNER_TEMP --target-platform=${{ env.TARGET_PLATFORM }} --experimental  --no-include-recipe
+          pixi r -e build-self rattler-build build --recipe recipe/recipe.yaml --output-dir=$RUNNER_TEMP --target-platform=${{ env.TARGET_PLATFORM }} --experimental
       - name: Upload all packages
         shell: bash
         # do not upload on PR
