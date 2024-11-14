@@ -1,0 +1,69 @@
+on:
+  push:
+    branches:
+      - "main"
+  pull_request:
+
+name: "Build Conda Package"
+
+permissions:
+  id-token: write
+  contents: read
+jobs:
+  generate_version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.set_version.outputs.version }}
+    steps:
+      - name: Set up datetime
+        id: datetime
+        run: echo "datetime=$(date -u +'%Y%m%d%H%M%S')" >> $GITHUB_ENV
+      - name: Set version
+        id: set_version
+        run: |
+          VERSION="0.1.0dev${{ env.datetime }}"
+          echo "Generated version: $VERSION"
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+  rattler-build:
+    needs: generate_version
+    strategy:
+      matrix:
+        include:
+          - { target: linux-64, os: ubuntu-20.04 }
+          - { target: win-64, os: windows-latest }
+          # force older macos-13 to get x86_64 runners
+          # - { target: osx-64, os: macos-13 }
+          - { target: osx-arm64, os: macos-14 }
+      fail-fast: false
+
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: prefix-dev/setup-pixi@v0.5.1
+        with:
+          pixi-version: v0.32.1
+          cache: true
+          environments: build-self
+      - name: Enable long paths
+        if: ${{ matrix.os == 'windows-latest' }}
+        run: |
+          git config --global core.longpaths true
+        shell: bash
+      - name: Run rattler-build
+        shell: bash
+        env:
+          TARGET_PLATFORM: ${{ matrix.target }}
+          RECIPE_VERSION: ${{ needs.generate_version.outputs.version }}
+        run: |
+          pixi r -e build-self rattler-build build --recipe recipe/recipe.yaml --output-dir=$RUNNER_TEMP --target-platform=${{ env.TARGET_PLATFORM }} --experimental
+      - name: Upload all packages
+        shell: bash
+        # do not upload on PR
+        if: github.event_name == 'push'
+        run: |
+          # ignore errors because we want to ignore duplicate packages
+          for file in $RUNNER_TEMP/**/*.conda; do
+            echo "Uploading ${file}"
+            rattler-build upload prefix -c pixi-build-backends "$file"
+          done
