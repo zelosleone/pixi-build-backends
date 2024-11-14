@@ -30,13 +30,7 @@ outputs:
         - bin/pixi-build-python
         - bin/pixi-build-python.exe
     tests:
-      - if: unix
-        then:
-          script:
-            - pixi-build-python --help
-        else:
-          script:
-            - pixi-build-python.exe --help
+      - script: pixi-build-python --help
   - package:
       name: pixi-build-cmake
     build:
@@ -44,10 +38,4 @@ outputs:
         - bin/pixi-build-cmake
         - bin/pixi-build-cmake.exe
     tests:
-      - if: unix
-        then:
-          script:
-            - pixi-build-cmake --help
-        else:
-          script:
-            - pixi-build-cmake.exe --help
+      - script: pixi-build-cmake --help
