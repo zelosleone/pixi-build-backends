@@ -65,5 +65,5 @@ jobs:
           # ignore errors because we want to ignore duplicate packages
           for file in $RUNNER_TEMP/**/*.conda; do
             echo "Uploading ${file}"
-            rattler-build upload prefix -c pixi-build-backends "$file"
+            pixi r -e build-self rattler-build upload prefix -c pixi-build-backends "$file"
           done
