@@ -60,10 +60,19 @@ jobs:
       - name: Upload all packages
         shell: bash
         # do not upload on PR
-        if: github.event_name == 'push'
+        if: github.event_name == 'push' && matrix.os != 'windows-latest'
         run: |
           # ignore errors because we want to ignore duplicate packages
           for file in $RUNNER_TEMP/**/*.conda; do
             echo "Uploading ${file}"
             pixi r -e build-self rattler-build upload prefix -c pixi-build-backends "$file"
           done
+      - name: Upload all packages
+        shell: pwsh
+        if: github.event_name == 'push' && matrix.os == 'windows-latest'
+        run: |
+          # ignore errors because we want to ignore duplicate packages
+          Get-ChildItem -Path $env:RUNNER_TEMP -Filter *.conda -Recurse | ForEach-Object {
+            Write-Host "Uploading $($_.FullName)"
+            pixi r -e build-self rattler-build upload prefix -c pixi-build-backends "$($_.FullName)"
+          }
