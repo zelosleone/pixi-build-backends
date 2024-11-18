@@ -73,6 +73,8 @@ impl ManifestExt for Manifest {
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+
     use pixi_manifest::Manifest;
 
     #[test]
@@ -94,8 +96,7 @@ mod tests {
             dependencies = []
             "#;
 
-        let tmp_path = tempfile::tempdir().unwrap();
-        let manifest_path = tmp_path.path().join("pixi.toml");
-        Manifest::from_str(manifest_path.as_path(), raw_manifest).unwrap();
+        let manifest_path = Path::new("pixi.toml");
+        Manifest::from_str(manifest_path, raw_manifest).unwrap();
     }
 }
