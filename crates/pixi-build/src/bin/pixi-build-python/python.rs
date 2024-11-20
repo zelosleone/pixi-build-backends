@@ -187,7 +187,7 @@ impl PythonBuildBackend {
             .expect("the project manifest must reside in a directory");
 
         // Parse the package name from the manifest
-        let Some(name) = self.manifest.parsed.project.name.clone() else {
+        let Some(name) = self.manifest.workspace.workspace.name.clone() else {
             miette::bail!("a 'name' field is required in the project manifest");
         };
         let name = PackageName::from_str(&name).into_diagnostic()?;
@@ -267,7 +267,7 @@ impl PythonBuildBackend {
         work_directory: &Path,
     ) -> miette::Result<BuildConfiguration> {
         // Parse the package name from the manifest
-        let Some(name) = self.manifest.parsed.project.name.clone() else {
+        let Some(name) = self.manifest.workspace.workspace.name.clone() else {
             miette::bail!("a 'name' field is required in the project manifest");
         };
         let name = PackageName::from_str(&name).into_diagnostic()?;

@@ -18,6 +18,8 @@ impl TemporaryRenderedRecipe {
             .into_diagnostic()
             .context("failed to create output directory")?;
 
+        eprintln!("I have created the output directory");
+
         let (recipe_file, recipe_path) = tempfile::Builder::new()
             .prefix(".rendered-recipe")
             .suffix(".yaml")
