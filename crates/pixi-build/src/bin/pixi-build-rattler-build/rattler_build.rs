@@ -285,7 +285,6 @@ impl Protocol for RattlerBuildBackend {
             let temp_recipe = TemporaryRenderedRecipe::from_output(&output)?;
 
             let tool_config = &tool_config;
-            // eprintln!("output dir is {:?}", output.build_configuration.directories.output_dir);
             let (output, build_path) = temp_recipe
                 .within_context_async(move || async move { run_build(output, tool_config).await })
                 .await?;
@@ -376,7 +375,7 @@ mod tests {
             .await
             .unwrap();
 
-        eprintln!("conda metadata result {:?}", result);
+        assert_eq!(result.packages.len(), 3);
     }
 
     #[tokio::test]
@@ -411,8 +410,6 @@ mod tests {
             .await
             .unwrap();
 
-        eprintln!("conda metadata result {:?}", result);
-
-        eprintln!("name is {:?}", result.packages[0].name);
+        assert_eq!(result.packages[0].name, "boltons-with-extra");
     }
 }
