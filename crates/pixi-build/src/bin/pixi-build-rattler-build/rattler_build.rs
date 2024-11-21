@@ -52,7 +52,6 @@ impl RattlerBuildBackend {
         // Load the manifest from the source directory
         let raw_recipe = std::fs::read_to_string(manifest_path).into_diagnostic()?;
 
-
         Ok(Self {
             raw_recipe,
             recipe_path: manifest_path.to_path_buf(),
