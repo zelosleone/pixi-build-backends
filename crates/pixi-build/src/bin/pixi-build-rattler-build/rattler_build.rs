@@ -112,7 +112,7 @@ impl Protocol for RattlerBuildBackend {
 
         let channels = params
             .channel_base_urls
-            .unwrap_or_else(|| vec![Url::from_str("https://fast.prefix.dev/conda-forge").unwrap()]);
+            .unwrap_or_else(|| vec![Url::from_str("https://prefix.dev/conda-forge").unwrap()]);
 
         let discovered_outputs = rattler_build_tool.discover_outputs()?;
 
