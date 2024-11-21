@@ -124,7 +124,7 @@ impl Protocol for RattlerBuildBackend {
 
         let host_vpkgs = RattlerBuild::detect_virtual_packages(host_vpkgs)?;
 
-        let build_vpkgs: Option<Vec<rattler_conda_types::GenericVirtualPackage>> = params
+        let build_vpkgs = params
             .build_platform
             .as_ref()
             .map(|p| p.virtual_packages.clone())
