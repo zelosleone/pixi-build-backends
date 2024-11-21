@@ -70,3 +70,33 @@ impl ManifestExt for Manifest {
         self
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use pixi_manifest::Manifest;
+
+    #[test]
+    fn test_manifest_root() {
+        let raw_manifest = r#"
+            [project]
+            authors = ["Tim de Jager <tim@prefix.dev>"]
+            channels = ["conda-forge"]
+            description = "Add a short description here"
+            name = "basic"
+            platforms = ["osx-arm64"]
+            version = "0.1.0"
+
+            [tasks]
+
+            [build]
+            channels = []
+            build-backend = "pixi-build-python"
+            dependencies = []
+            "#;
+
+        let manifest_path = Path::new("pixi.toml");
+        Manifest::from_str(manifest_path, raw_manifest).unwrap();
+    }
+}

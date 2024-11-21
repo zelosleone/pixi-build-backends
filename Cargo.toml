@@ -46,7 +46,6 @@ pixi_manifest = { git = "https://github.com/prefix-dev/pixi", branch = "feature/
 pixi_spec = { git = "https://github.com/prefix-dev/pixi", branch = "feature/pixi-build" }
 
 
-
 [patch.crates-io]
 rattler_conda_types = { git = "https://github.com/conda/rattler", branch = "main"}
 rattler_package_streaming = { git = "https://github.com/conda/rattler", branch = "main"}
