@@ -39,3 +39,12 @@ outputs:
         - bin/pixi-build-cmake.exe
     tests:
       - script: pixi-build-cmake --help
+
+  - package:
+      name: pixi-build-rattler-build
+    build:
+      files:
+        - bin/pixi-build-rattler-build
+        - bin/pixi-build-rattler-build.exe
+    tests:
+      - script: pixi-build-rattler-build --help

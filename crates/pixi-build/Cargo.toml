@@ -28,6 +28,8 @@ serde_yaml = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 minijinja = { workspace = true }
 itertools = { workspace = true }
+url = { workspace = true }
+indexmap = { workspace = true }
 
 parking_lot = { workspace = true }
 

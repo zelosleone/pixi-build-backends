@@ -24,15 +24,15 @@ pub trait ManifestExt {
         channel_config: &ChannelConfig,
     ) -> Result<Vec<Url>, ParseChannelError> {
         self.manifest()
-            .parsed
-            .project
+            .workspace
+            .workspace
             .channels
             .iter()
             .map(|c| {
                 c.channel
                     .clone()
                     .into_base_url(channel_config)
-                    .map(|b| b.url().clone())
+                    .map(|cl| cl.url().as_ref().clone())
             })
             .collect()
     }
@@ -41,8 +41,8 @@ pub trait ManifestExt {
     /// platform.
     fn supports_target_platform(&self, platform: Platform) -> bool {
         self.manifest()
-            .parsed
-            .project
+            .workspace
+            .workspace
             .platforms
             .value
             .contains(&platform)
@@ -53,7 +53,7 @@ pub trait ManifestExt {
     /// Note that this may be `None` because having a version is not required.
     /// Use [`Self::version_or_default`] to get a default version in that case.
     fn version(&self) -> Option<&Version> {
-        self.manifest().parsed.project.version.as_ref()
+        self.manifest().workspace.workspace.version.as_ref()
     }
 
     /// Returns the version of the project or a default version if no version is
