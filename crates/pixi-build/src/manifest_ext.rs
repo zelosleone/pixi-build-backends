@@ -87,10 +87,11 @@ mod tests {
             name = "basic"
             platforms = ["osx-arm64"]
             version = "0.1.0"
+            preview = ["pixi-build"]
 
             [tasks]
 
-            [build]
+            [build-system]
             channels = []
             build-backend = "pixi-build-python"
             dependencies = []
