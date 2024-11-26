@@ -187,9 +187,7 @@ impl PythonBuildBackend {
             .expect("the project manifest must reside in a directory");
 
         // Parse the package name from the manifest
-        let Some(name) = self.manifest.workspace.workspace.name.clone() else {
-            miette::bail!("a 'name' field is required in the project manifest");
-        };
+        let name = self.manifest.workspace.workspace.name.clone();
         let name = PackageName::from_str(&name).into_diagnostic()?;
         let version = self.manifest.version_or_default().clone();
 
@@ -267,9 +265,7 @@ impl PythonBuildBackend {
         work_directory: &Path,
     ) -> miette::Result<BuildConfiguration> {
         // Parse the package name from the manifest
-        let Some(name) = self.manifest.workspace.workspace.name.clone() else {
-            miette::bail!("a 'name' field is required in the project manifest");
-        };
+        let name = self.manifest.workspace.workspace.name.clone();
         let name = PackageName::from_str(&name).into_diagnostic()?;
 
         std::fs::create_dir_all(work_directory)
@@ -311,6 +307,7 @@ impl PythonBuildBackend {
         };
 
         let variant = BTreeMap::new();
+        let channels = channels.into_iter().map(Into::into).collect();
 
         Ok(BuildConfiguration {
             // TODO: NoArch??

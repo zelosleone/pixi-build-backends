@@ -2,6 +2,7 @@ use std::{collections::BTreeMap, path::PathBuf};
 
 use chrono::Utc;
 use indexmap::IndexSet;
+use itertools::Itertools;
 use miette::IntoDiagnostic;
 use pixi_build_types::procedures::conda_metadata::CondaMetadataParams;
 use rattler_build::{
@@ -123,6 +124,7 @@ impl RattlerBuild {
 
         let mut subpackages = BTreeMap::new();
 
+        let channels = channels.into_iter().map(Into::into).collect_vec();
         for discovered_output in discovered_outputs {
             let hash = HashInfo::from_variant(
                 &discovered_output.used_vars,
