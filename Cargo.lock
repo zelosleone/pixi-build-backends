@@ -3228,7 +3228,7 @@ dependencies = [
 [[package]]
 name = "rattler-build"
 version = "0.31.1"
-source = "git+https://github.com/tdejager/rattler-build?branch=feat/upgrade-middleware#0fb94a7b916467e5c26114cb30e03d6debdc8a2b"
+source = "git+https://github.com/prefix-dev/rattler-build?branch=main#1bbfa549ab992785387596c82dedbd23778168fc"
 dependencies = [
  "anyhow",
  "async-once-cell",
