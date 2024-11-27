@@ -6,6 +6,7 @@ use std::{
 };
 
 use chrono::Utc;
+use itertools::Itertools;
 use miette::{Context, IntoDiagnostic};
 use pixi_build_backend::{
     dependencies::MatchspecExtractor,
@@ -214,9 +215,14 @@ impl CMakeBuildBackend {
             .expect("the project manifest must reside in a directory");
 
         // Parse the package name from the manifest
-        let Some(name) = self.manifest.workspace.workspace.name.clone() else {
-            miette::bail!("a 'name' field is required in the project manifest");
-        };
+        let name = self
+            .manifest
+            .package
+            .as_ref()
+            .ok_or_else(|| miette::miette!("manifest should contain a [package]"))?
+            .package
+            .name
+            .clone();
         let name = PackageName::from_str(&name).into_diagnostic()?;
         let version = self.manifest.version_or_default().clone();
 
@@ -294,11 +300,15 @@ impl CMakeBuildBackend {
         work_directory: &Path,
     ) -> miette::Result<BuildConfiguration> {
         // Parse the package name from the manifest
-        let Some(name) = self.manifest.workspace.workspace.name.clone() else {
-            miette::bail!("a 'name' field is required in the project manifest");
-        };
+        let name = self
+            .manifest
+            .package
+            .as_ref()
+            .ok_or_else(|| miette::miette!("manifest should contain a [package]"))?
+            .package
+            .name
+            .clone();
         let name = PackageName::from_str(&name).into_diagnostic()?;
-
         // TODO: Setup defaults
         std::fs::create_dir_all(work_directory)
             .into_diagnostic()
@@ -337,6 +347,7 @@ impl CMakeBuildBackend {
         };
 
         let variant = BTreeMap::new();
+        let channels = channels.into_iter().map(Into::into).collect_vec();
 
         Ok(BuildConfiguration {
             target_platform: host_platform.platform,
