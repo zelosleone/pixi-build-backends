@@ -80,14 +80,17 @@ mod tests {
     #[test]
     fn test_manifest_root() {
         let raw_manifest = r#"
-            [project]
-            authors = ["Tim de Jager <tim@prefix.dev>"]
+            [workspace]
+            name = "basic"
             channels = ["conda-forge"]
+            platforms = ["osx-arm64"]
+            preview = ["pixi-build"]
+
+            [package]
+            authors = ["Tim de Jager <tim@prefix.dev>"]
             description = "Add a short description here"
             name = "basic"
-            platforms = ["osx-arm64"]
             version = "0.1.0"
-            preview = ["pixi-build"]
 
             [tasks]
 
