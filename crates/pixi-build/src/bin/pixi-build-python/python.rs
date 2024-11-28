@@ -603,10 +603,10 @@ mod tests {
 
         // copy boltons example to boltons_tmp_project
 
-        let _ = std::fs::create_dir_all(&boltons_tmp_project);
+        let _ = std::fs::create_dir_all(boltons_tmp_project);
 
-        let _ = fs_extra::dir::copy(&boltons_folder, &boltons_tmp_project, &CopyOptions::new())
-            .unwrap();
+        let _ =
+            fs_extra::dir::copy(&boltons_folder, boltons_tmp_project, &CopyOptions::new()).unwrap();
 
         let factory = PythonBuildBackend::factory(LoggingOutputHandler::default())
             .initialize(InitializeParams {
