@@ -1,4 +1,5 @@
 use std::{
+    borrow::Cow,
     collections::BTreeMap,
     path::{Path, PathBuf},
     str::FromStr,
@@ -6,6 +7,7 @@ use std::{
 };
 
 use chrono::Utc;
+use indexmap::IndexMap;
 use itertools::Itertools;
 use miette::{Context, IntoDiagnostic};
 use pixi_build_backend::{
@@ -22,7 +24,7 @@ use pixi_build_types::{
     },
     BackendCapabilities, CondaPackageMetadata, FrontendCapabilities, PlatformAndVirtualPackages,
 };
-use pixi_manifest::{Dependencies, Manifest, SpecType};
+use pixi_manifest::{Dependencies, Manifest};
 use pixi_spec::PixiSpec;
 use rattler_build::{
     build::run_build,
@@ -106,24 +108,27 @@ impl CMakeBuildBackend {
         channel_config: &ChannelConfig,
     ) -> miette::Result<Requirements> {
         let mut requirements = Requirements::default();
-        let default_features = [self.manifest.default_feature()];
+        let package = self.manifest.package.clone().ok_or_else(|| {
+            miette::miette!(
+                "manifest {} does not contains [package] section",
+                self.manifest.path.display()
+            )
+        })?;
 
-        // Get all different feature types
-        let run_dependencies = Dependencies::from(
-            default_features
-                .iter()
-                .filter_map(|f| f.dependencies(SpecType::Run, Some(host_platform))),
-        );
-        let mut host_dependencies = Dependencies::from(
-            default_features
-                .iter()
-                .filter_map(|f| f.dependencies(SpecType::Host, Some(host_platform))),
-        );
-        let build_dependencies = Dependencies::from(
-            default_features
-                .iter()
-                .filter_map(|f| f.dependencies(SpecType::Build, Some(host_platform))),
-        );
+        let default_features = package.targets.default();
+
+        let run_dependencies = default_features
+            .run_dependencies()
+            .cloned()
+            .unwrap_or_else(IndexMap::new);
+        let build_dependencies = default_features
+            .build_dependencies()
+            .cloned()
+            .unwrap_or_else(IndexMap::new);
+        let mut host_dependencies = default_features
+            .host_dependencies()
+            .cloned()
+            .unwrap_or_else(IndexMap::new);
 
         // Ensure build tools are available in the host dependencies section.
         for pkg_name in ["cmake", "ninja"] {
@@ -133,11 +138,12 @@ impl CMakeBuildBackend {
                 continue;
             }
 
-            if let Some(run_requirements) = run_dependencies.get(pkg_name) {
+            if let Some(run_requirement) = run_dependencies.get(pkg_name) {
                 // Copy the run requirements to the host requirements.
-                for req in run_requirements {
-                    host_dependencies.insert(PackageName::from_str(pkg_name).unwrap(), req.clone());
-                }
+                host_dependencies.insert(
+                    PackageName::from_str(pkg_name).unwrap(),
+                    run_requirement.clone(),
+                );
             } else {
                 host_dependencies.insert(
                     PackageName::from_str(pkg_name).unwrap(),
@@ -145,6 +151,11 @@ impl CMakeBuildBackend {
                 );
             }
         }
+
+        // Dependencies can be created only from an iterator of cows, so we need to create them
+        let build_dependencies = Dependencies::from([Cow::Owned(build_dependencies)]);
+        let run_dependencies = Dependencies::from([Cow::Owned(run_dependencies)]);
+        let host_dependencies = Dependencies::from([Cow::Owned(host_dependencies)]);
 
         requirements.build = MatchspecExtractor::new(channel_config.clone())
             .with_ignore_self(true)

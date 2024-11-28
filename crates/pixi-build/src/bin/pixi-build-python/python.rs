@@ -143,11 +143,11 @@ impl PythonBuildBackend {
                 continue;
             }
 
-            if let Some(run_requirements) = run_dependencies.get(pkg_name) {
+            if let Some(run_requirement) = run_dependencies.get(pkg_name) {
                 // Copy the run requirements to the host requirements.
                 host_dependencies.insert(
                     PackageName::from_str(pkg_name).unwrap(),
-                    run_requirements.clone(),
+                    run_requirement.clone(),
                 );
             } else {
                 host_dependencies.insert(
