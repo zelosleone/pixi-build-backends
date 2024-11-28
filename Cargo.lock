@@ -3237,7 +3237,7 @@ dependencies = [
 [[package]]
 name = "rattler-build"
 version = "0.31.1"
-source = "git+https://github.com/prefix-dev/rattler-build?branch=main#1bbfa549ab992785387596c82dedbd23778168fc"
+source = "git+https://github.com/prefix-dev/rattler-build?branch=main#eb9effd0ee8c1d528d21206edcb3c1180064a2da"
 dependencies = [
  "anyhow",
  "async-once-cell",
