@@ -634,7 +634,6 @@ mod tests {
             .await
             .unwrap();
 
-        // eprintln!("{:?}", result);
         assert_eq!(result.packages[0].name, "boltons");
     }
 }
