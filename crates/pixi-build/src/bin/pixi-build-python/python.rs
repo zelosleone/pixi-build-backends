@@ -1,11 +1,9 @@
 use std::{
-    collections::BTreeMap,
-    path::{Path, PathBuf},
-    str::FromStr,
-    sync::Arc,
+    borrow::Cow, collections::BTreeMap, path::{Path, PathBuf}, str::FromStr, sync::Arc
 };
 
 use chrono::Utc;
+use indexmap::IndexMap;
 use miette::{Context, IntoDiagnostic};
 use pixi_build_backend::{
     dependencies::MatchspecExtractor,
@@ -102,24 +100,14 @@ impl PythonBuildBackend {
         channel_config: &ChannelConfig,
     ) -> miette::Result<(Requirements, Installer)> {
         let mut requirements = Requirements::default();
-        let default_features = [self.manifest.default_feature()];
+        let package = self.manifest.package.clone().ok_or_else(|| miette::miette!("manifest {} does not contains [package] section", self.manifest.path.display()))?;
+        
+        let default_features = package.targets.default();
 
-        // Get all different feature types
-        let run_dependencies = Dependencies::from(
-            default_features
-                .iter()
-                .filter_map(|f| f.dependencies(SpecType::Run, Some(host_platform))),
-        );
-        let mut host_dependencies = Dependencies::from(
-            default_features
-                .iter()
-                .filter_map(|f| f.dependencies(SpecType::Host, Some(host_platform))),
-        );
-        let build_dependencies = Dependencies::from(
-            default_features
-                .iter()
-                .filter_map(|f| f.dependencies(SpecType::Build, Some(host_platform))),
-        );
+        let run_dependencies = default_features.run_dependencies().cloned().unwrap_or_else(|| IndexMap::new());
+        let build_dependencies = default_features.build_dependencies().cloned().unwrap_or_else(|| IndexMap::new());
+        let mut host_dependencies = default_features.host_dependencies().cloned().unwrap_or_else(|| IndexMap::new());
+
 
         // Determine the installer to use
         let installer = if host_dependencies.contains_key("uv")
@@ -141,9 +129,7 @@ impl PythonBuildBackend {
 
             if let Some(run_requirements) = run_dependencies.get(pkg_name) {
                 // Copy the run requirements to the host requirements.
-                for req in run_requirements {
-                    host_dependencies.insert(PackageName::from_str(pkg_name).unwrap(), req.clone());
-                }
+                host_dependencies.insert(PackageName::from_str(pkg_name).unwrap(), run_requirements.clone());
             } else {
                 host_dependencies.insert(
                     PackageName::from_str(pkg_name).unwrap(),
@@ -152,25 +138,44 @@ impl PythonBuildBackend {
             }
         }
 
+        let mut build_deps = Dependencies::default();
+        let mut run_deps = Dependencies::default();
+        let mut host_deps = Dependencies::default();
+        
+        for build_dep in build_dependencies.iter(){
+            build_deps.insert(build_dep.0.clone(), build_dep.1.clone());
+        }
+
+        for run_dep in run_dependencies.iter(){
+            run_deps.insert(run_dep.0.clone(), run_dep.1.clone());
+        }
+
+        for host_dep in host_dependencies.iter(){
+            host_deps.insert(host_dep.0.clone(), host_dep.1.clone());
+        }
+
+
+
         requirements.build = MatchspecExtractor::new(channel_config.clone())
             .with_ignore_self(true)
-            .extract(build_dependencies)?
+            .extract(build_deps)?
             .into_iter()
             .map(Dependency::Spec)
             .collect();
         requirements.host = MatchspecExtractor::new(channel_config.clone())
             .with_ignore_self(true)
-            .extract(host_dependencies)?
+            .extract(host_deps)?
             .into_iter()
             .map(Dependency::Spec)
             .collect();
         requirements.run = MatchspecExtractor::new(channel_config.clone())
             .with_ignore_self(true)
-            .extract(run_dependencies)?
+            .extract(run_deps)?
             .into_iter()
             .map(Dependency::Spec)
             .collect();
 
+        eprintln!("requirements: {:?}", requirements);
         Ok((requirements, installer))
     }
 
@@ -247,7 +252,7 @@ impl PythonBuildBackend {
                 // dynamic_linking: Default::default(),
                 // always_copy_files: Default::default(),
                 // always_include_files: Default::default(),
-                // merge_build_and_host_envs: false,
+                merge_build_and_host_envs: true,
                 // variant: Default::default(),
                 // prefix_detection: Default::default(),
                 // post_process: vec![],
@@ -568,4 +573,71 @@ impl ProtocolFactory for PythonBuildBackendFactory {
         let capabilities = instance.capabilites(&params.capabilities);
         Ok((instance, InitializeResult { capabilities }))
     }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use std::{fs, path::PathBuf, str::FromStr};
+    use fs_extra;
+    use pixi_build_backend::protocol::{Protocol, ProtocolFactory};
+    use pixi_build_types::{procedures::{conda_build::CondaBuildParams, initialize::InitializeParams}, ChannelConfiguration, FrontendCapabilities};
+    use rattler_build::console_utils::LoggingOutputHandler;
+    use tempfile::tempdir;
+    use tracing_test::traced_test;
+    use url::Url;
+
+    use crate::python::PythonBuildBackend;
+
+
+
+    #[tokio::test]
+    async fn test_python_respect_host_dependencies() {
+        // get cargo manifest dir
+        let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let boltons_folder = manifest_dir.join("../../tests/examples/boltons");
+
+        let tmp_project = tempdir().unwrap();
+        let boltons_tmp_project = tmp_project.path();
+
+        // copy boltons example to boltons_tmp_project
+
+        let _ = std::fs::create_dir_all(&boltons_tmp_project);
+        let mut copy_options = fs_extra::dir::CopyOptions::new().copy_inside(false);
+
+
+        let _ = fs_extra::dir::copy(&boltons_folder, &boltons_tmp_project, &copy_options).unwrap();
+
+
+
+        let factory = PythonBuildBackend::factory(LoggingOutputHandler::default())
+            .initialize(InitializeParams {
+                manifest_path: boltons_tmp_project.join("boltons").join("pixi.toml"),
+                capabilities: FrontendCapabilities {},
+                cache_directory: None,
+            })
+            .await
+            .unwrap();
+
+        let current_dir = tempdir().unwrap();
+
+        let result = factory
+            .0
+            .build_conda(CondaBuildParams {
+                build_platform_virtual_packages: None,
+                host_platform: None,
+                channel_base_urls: None,
+                channel_configuration: ChannelConfiguration {
+                    base_url: Url::from_str("https://fast.prefix.dev").unwrap(),
+                },
+                outputs: None,
+                work_directory: current_dir.into_path(),
+            })
+            .await
+            .unwrap();
+
+        eprintln!("{:?}", result);
+        // assert_eq!(result.packages[0].name, "boltons-with-extra");
+    }
+
 }
