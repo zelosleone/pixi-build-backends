@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
+use fs_err as fs;
 use miette::IntoDiagnostic;
 use pixi_build_backend::protocol::{Protocol, ProtocolFactory};
 use pixi_build_backend::tools::RattlerBuild;
@@ -50,7 +51,7 @@ impl RattlerBuildBackend {
         cache_dir: Option<PathBuf>,
     ) -> miette::Result<Self> {
         // Load the manifest from the source directory
-        let raw_recipe = std::fs::read_to_string(manifest_path).into_diagnostic()?;
+        let raw_recipe = fs::read_to_string(manifest_path).into_diagnostic()?;
 
         Ok(Self {
             raw_recipe,
@@ -79,6 +80,9 @@ impl Protocol for RattlerBuildBackend {
         &self,
         params: CondaMetadataParams,
     ) -> miette::Result<CondaMetadataResult> {
+        // Create the work directory if it does not exist
+        fs::create_dir_all(&params.work_directory).into_diagnostic()?;
+
         let host_platform = params
             .host_platform
             .as_ref()
@@ -200,6 +204,9 @@ impl Protocol for RattlerBuildBackend {
     }
 
     async fn build_conda(&self, params: CondaBuildParams) -> miette::Result<CondaBuildResult> {
+        // Create the work directory if it does not exist
+        fs::create_dir_all(&params.work_directory).into_diagnostic()?;
+
         let host_platform = params
             .host_platform
             .as_ref()
@@ -249,7 +256,7 @@ impl Protocol for RattlerBuildBackend {
 
         let channels = params
             .channel_base_urls
-            .unwrap_or_else(|| vec![Url::from_str("https://fast.prefix.dev/conda-forge").unwrap()]);
+            .unwrap_or_else(|| vec![Url::from_str("https://prefix.dev/conda-forge").unwrap()]);
 
         let rattler_build_tool = RattlerBuild::new(
             self.raw_recipe.clone(),
@@ -365,7 +372,7 @@ mod tests {
                 host_platform: None,
                 build_platform: None,
                 channel_configuration: ChannelConfiguration {
-                    base_url: Url::from_str("https://fast.prefix.dev").unwrap(),
+                    base_url: Url::from_str("https://prefix.dev").unwrap(),
                 },
                 channel_base_urls: None,
                 work_directory: current_dir,
@@ -400,7 +407,7 @@ mod tests {
                 host_platform: None,
                 channel_base_urls: None,
                 channel_configuration: ChannelConfiguration {
-                    base_url: Url::from_str("https://fast.prefix.dev").unwrap(),
+                    base_url: Url::from_str("https://prefix.dev").unwrap(),
                 },
                 outputs: None,
                 work_directory: current_dir.into_path(),
