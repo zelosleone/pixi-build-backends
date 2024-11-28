@@ -7,7 +7,7 @@ use std::{
 };
 
 use chrono::Utc;
-use indexmap::IndexMap;
+use itertools::Itertools;
 use miette::{Context, IntoDiagnostic};
 use pixi_build_backend::{
     dependencies::MatchspecExtractor,
@@ -23,7 +23,7 @@ use pixi_build_types::{
     },
     BackendCapabilities, CondaPackageMetadata, FrontendCapabilities, PlatformAndVirtualPackages,
 };
-use pixi_manifest::{Dependencies, Manifest};
+use pixi_manifest::{Dependencies, Manifest, SpecType};
 use pixi_spec::PixiSpec;
 use rattler_build::{
     build::run_build,
@@ -100,6 +100,7 @@ impl PythonBuildBackend {
     /// recipe.
     fn requirements(
         &self,
+        host_platform: Platform,
         channel_config: &ChannelConfig,
     ) -> miette::Result<(Requirements, Installer)> {
         let mut requirements = Requirements::default();
@@ -110,20 +111,25 @@ impl PythonBuildBackend {
             )
         })?;
 
-        let default_features = package.targets.default();
+        let targets = package.targets.resolve(Some(host_platform)).collect_vec();
 
-        let run_dependencies = default_features
-            .run_dependencies()
-            .cloned()
-            .unwrap_or_else(IndexMap::new);
-        let build_dependencies = default_features
-            .build_dependencies()
-            .cloned()
-            .unwrap_or_else(IndexMap::new);
-        let mut host_dependencies = default_features
-            .host_dependencies()
-            .cloned()
-            .unwrap_or_else(IndexMap::new);
+        let run_dependencies = Dependencies::from(
+            targets
+                .iter()
+                .filter_map(|f| f.dependencies(SpecType::Run).cloned().map(Cow::Owned)),
+        );
+
+        let build_dependencies = Dependencies::from(
+            targets
+                .iter()
+                .filter_map(|f| f.dependencies(SpecType::Build).cloned().map(Cow::Owned)),
+        );
+
+        let mut host_dependencies = Dependencies::from(
+            targets
+                .iter()
+                .filter_map(|f| f.dependencies(SpecType::Host).cloned().map(Cow::Owned)),
+        );
 
         // Determine the installer to use
         let installer = if host_dependencies.contains_key("uv")
@@ -143,12 +149,11 @@ impl PythonBuildBackend {
                 continue;
             }
 
-            if let Some(run_requirement) = run_dependencies.get(pkg_name) {
+            if let Some(run_requirements) = run_dependencies.get(pkg_name) {
                 // Copy the run requirements to the host requirements.
-                host_dependencies.insert(
-                    PackageName::from_str(pkg_name).unwrap(),
-                    run_requirement.clone(),
-                );
+                for req in run_requirements {
+                    host_dependencies.insert(PackageName::from_str(pkg_name).unwrap(), req.clone());
+                }
             } else {
                 host_dependencies.insert(
                     PackageName::from_str(pkg_name).unwrap(),
@@ -156,11 +161,6 @@ impl PythonBuildBackend {
                 );
             }
         }
-
-        // Dependencies can be created only from an iterator of cows, so we need to create them
-        let build_dependencies = Dependencies::from([Cow::Owned(build_dependencies)]);
-        let run_dependencies = Dependencies::from([Cow::Owned(run_dependencies)]);
-        let host_dependencies = Dependencies::from([Cow::Owned(host_dependencies)]);
 
         requirements.build = MatchspecExtractor::new(channel_config.clone())
             .with_ignore_self(true)
@@ -181,12 +181,15 @@ impl PythonBuildBackend {
             .map(Dependency::Spec)
             .collect();
 
-        eprintln!("requirements: {:?}", requirements);
         Ok((requirements, installer))
     }
 
     /// Constructs a [`Recipe`] from the current manifest.
-    fn recipe(&self, channel_config: &ChannelConfig) -> miette::Result<Recipe> {
+    fn recipe(
+        &self,
+        host_platform: Platform,
+        channel_config: &ChannelConfig,
+    ) -> miette::Result<Recipe> {
         let manifest_root = self
             .manifest
             .path
@@ -209,7 +212,7 @@ impl PythonBuildBackend {
         let noarch_type = NoArchType::python();
 
         // TODO: Read from config / project.
-        let (requirements, installer) = self.requirements(channel_config)?;
+        let (requirements, installer) = self.requirements(host_platform, channel_config)?;
         let build_platform = Platform::current();
         let build_number = 0;
 
@@ -424,7 +427,7 @@ impl Protocol for PythonBuildBackend {
         }
 
         // TODO: Determine how and if we can determine this from the manifest.
-        let recipe = self.recipe(&channel_config)?;
+        let recipe = self.recipe(host_platform, &channel_config)?;
         let output = Output {
             build_configuration: self
                 .build_configuration(
@@ -516,7 +519,7 @@ impl Protocol for PythonBuildBackend {
             miette::bail!("the project does not support the target platform ({host_platform})");
         }
 
-        let recipe = self.recipe(&channel_config)?;
+        let recipe = self.recipe(host_platform, &channel_config)?;
         let output = Output {
             build_configuration: self
                 .build_configuration(&recipe, channels, None, None, &params.work_directory)
@@ -579,61 +582,84 @@ impl ProtocolFactory for PythonBuildBackendFactory {
 
 #[cfg(test)]
 mod tests {
-    use fs_extra::{self, dir::CopyOptions};
-    use pixi_build_backend::protocol::{Protocol, ProtocolFactory};
-    use pixi_build_types::{
-        procedures::{conda_build::CondaBuildParams, initialize::InitializeParams},
-        ChannelConfiguration, FrontendCapabilities,
-    };
-    use rattler_build::console_utils::LoggingOutputHandler;
-    use std::{path::PathBuf, str::FromStr};
+
+    use pixi_manifest::Manifest;
+    use rattler_build::{console_utils::LoggingOutputHandler, recipe::parser::Dependency};
+    use rattler_conda_types::{ChannelConfig, Platform};
+    use std::path::PathBuf;
+
     use tempfile::tempdir;
-    use url::Url;
 
     use crate::python::PythonBuildBackend;
 
     #[tokio::test]
-    async fn test_python_respect_host_dependencies() {
+    async fn test_setting_host_and_build_requirements() {
         // get cargo manifest dir
-        let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        let boltons_folder = manifest_dir.join("../../tests/examples/boltons");
 
-        let tmp_project = tempdir().unwrap();
-        let boltons_tmp_project = tmp_project.path();
+        let package_with_host_and_build_deps = r#"
+        [workspace]
+        name = "test-reqs"
+        channels = ["conda-forge"]
+        platforms = ["osx-arm64"]
+        preview = ["pixi-build"]
 
-        // copy boltons example to boltons_tmp_project
+        [package]
+        name = "test-reqs"
+        version = "1.0"
 
-        let _ = std::fs::create_dir_all(boltons_tmp_project);
+        [host-dependencies]
+        hatchling = "*"
 
-        let _ =
-            fs_extra::dir::copy(&boltons_folder, boltons_tmp_project, &CopyOptions::new()).unwrap();
+        [build-dependencies]
+        boltons = "*"
 
-        let factory = PythonBuildBackend::factory(LoggingOutputHandler::default())
-            .initialize(InitializeParams {
-                manifest_path: boltons_tmp_project.join("boltons").join("pixi.toml"),
-                capabilities: FrontendCapabilities {},
-                cache_directory: None,
-            })
-            .await
+        [build-system]
+        build-backend = "pixi-build-python"
+        dependencies = []
+        channels = []
+        "#;
+
+        let tmp_dir = tempdir().unwrap();
+        let tmp_manifest = tmp_dir.path().join("pixi.toml");
+
+        // write the raw string into the file
+        std::fs::write(&tmp_manifest, package_with_host_and_build_deps).unwrap();
+
+        let manifest = Manifest::from_str(&tmp_manifest, package_with_host_and_build_deps).unwrap();
+
+        let python_backend =
+            PythonBuildBackend::new(&manifest.path, LoggingOutputHandler::default(), None).unwrap();
+
+        let channel_config = ChannelConfig::default_with_root_dir(PathBuf::new());
+
+        let host_platform = Platform::current();
+
+        let (reqs, _) = python_backend
+            .requirements(host_platform, &channel_config)
             .unwrap();
 
-        let current_dir = tempdir().unwrap();
-
-        let result = factory
-            .0
-            .build_conda(CondaBuildParams {
-                build_platform_virtual_packages: None,
-                host_platform: None,
-                channel_base_urls: None,
-                channel_configuration: ChannelConfiguration {
-                    base_url: Url::from_str("https://fast.prefix.dev").unwrap(),
-                },
-                outputs: None,
-                work_directory: current_dir.into_path(),
+        let host_reqs = reqs
+            .host
+            .iter()
+            .map(|d| match d {
+                Dependency::Spec(spec) => spec.to_string(),
+                _ => "".to_string(),
             })
-            .await
-            .unwrap();
+            .collect::<Vec<String>>();
 
-        assert_eq!(result.packages[0].name, "boltons");
+        let build_reqs = reqs
+            .build
+            .iter()
+            .map(|d| match d {
+                Dependency::Spec(spec) => spec.to_string(),
+                _ => "".to_string(),
+            })
+            .collect::<Vec<String>>();
+
+        assert!(host_reqs.contains(&"hatchling *".to_string()));
+        assert!(!host_reqs.contains(&"boltons *".to_string()));
+
+        assert!(build_reqs.contains(&"boltons *".to_string()));
+        assert!(!host_reqs.contains(&"hatcling *".to_string()));
     }
 }

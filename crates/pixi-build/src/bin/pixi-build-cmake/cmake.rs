@@ -7,7 +7,6 @@ use std::{
 };
 
 use chrono::Utc;
-use indexmap::IndexMap;
 use itertools::Itertools;
 use miette::{Context, IntoDiagnostic};
 use pixi_build_backend::{
@@ -24,7 +23,7 @@ use pixi_build_types::{
     },
     BackendCapabilities, CondaPackageMetadata, FrontendCapabilities, PlatformAndVirtualPackages,
 };
-use pixi_manifest::{Dependencies, Manifest};
+use pixi_manifest::{Dependencies, Manifest, SpecType};
 use pixi_spec::PixiSpec;
 use rattler_build::{
     build::run_build,
@@ -115,20 +114,25 @@ impl CMakeBuildBackend {
             )
         })?;
 
-        let default_features = package.targets.default();
+        let targets = package.targets.resolve(Some(host_platform)).collect_vec();
 
-        let run_dependencies = default_features
-            .run_dependencies()
-            .cloned()
-            .unwrap_or_else(IndexMap::new);
-        let build_dependencies = default_features
-            .build_dependencies()
-            .cloned()
-            .unwrap_or_else(IndexMap::new);
-        let mut host_dependencies = default_features
-            .host_dependencies()
-            .cloned()
-            .unwrap_or_else(IndexMap::new);
+        let run_dependencies = Dependencies::from(
+            targets
+                .iter()
+                .filter_map(|f| f.dependencies(SpecType::Run).cloned().map(Cow::Owned)),
+        );
+
+        let build_dependencies = Dependencies::from(
+            targets
+                .iter()
+                .filter_map(|f| f.dependencies(SpecType::Build).cloned().map(Cow::Owned)),
+        );
+
+        let mut host_dependencies = Dependencies::from(
+            targets
+                .iter()
+                .filter_map(|f| f.dependencies(SpecType::Host).cloned().map(Cow::Owned)),
+        );
 
         // Ensure build tools are available in the host dependencies section.
         for pkg_name in ["cmake", "ninja"] {
@@ -138,12 +142,11 @@ impl CMakeBuildBackend {
                 continue;
             }
 
-            if let Some(run_requirement) = run_dependencies.get(pkg_name) {
+            if let Some(run_requirements) = run_dependencies.get(pkg_name) {
                 // Copy the run requirements to the host requirements.
-                host_dependencies.insert(
-                    PackageName::from_str(pkg_name).unwrap(),
-                    run_requirement.clone(),
-                );
+                for req in run_requirements {
+                    host_dependencies.insert(PackageName::from_str(pkg_name).unwrap(), req.clone());
+                }
             } else {
                 host_dependencies.insert(
                     PackageName::from_str(pkg_name).unwrap(),
@@ -151,11 +154,6 @@ impl CMakeBuildBackend {
                 );
             }
         }
-
-        // Dependencies can be created only from an iterator of cows, so we need to create them
-        let build_dependencies = Dependencies::from([Cow::Owned(build_dependencies)]);
-        let run_dependencies = Dependencies::from([Cow::Owned(run_dependencies)]);
-        let host_dependencies = Dependencies::from([Cow::Owned(host_dependencies)]);
 
         requirements.build = MatchspecExtractor::new(channel_config.clone())
             .with_ignore_self(true)
@@ -584,5 +582,88 @@ impl ProtocolFactory for CMakeBuildBackendFactory {
 
         let capabilities = instance.capabilites(&params.capabilities);
         Ok((instance, InitializeResult { capabilities }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+
+    use pixi_manifest::Manifest;
+    use rattler_build::{console_utils::LoggingOutputHandler, recipe::parser::Dependency};
+    use rattler_conda_types::{ChannelConfig, Platform};
+    use std::path::PathBuf;
+    use tempfile::tempdir;
+
+    use crate::cmake::CMakeBuildBackend;
+
+    #[tokio::test]
+    async fn test_setting_host_and_build_requirements() {
+        // get cargo manifest dir
+
+        let package_with_host_and_build_deps = r#"
+        [workspace]
+        name = "test-reqs"
+        channels = ["conda-forge"]
+        platforms = ["osx-arm64"]
+        preview = ["pixi-build"]
+
+        [package]
+        name = "test-reqs"
+        version = "1.0"
+
+        [host-dependencies]
+        hatchling = "*"
+
+        [build-dependencies]
+        boltons = "*"
+
+        [build-system]
+        build-backend = "pixi-build-cmake"
+        dependencies = []
+        channels = []
+        "#;
+
+        let tmp_dir = tempdir().unwrap();
+        let tmp_manifest = tmp_dir.path().join("pixi.toml");
+
+        // write the raw string into the file
+        std::fs::write(&tmp_manifest, package_with_host_and_build_deps).unwrap();
+
+        let manifest = Manifest::from_str(&tmp_manifest, package_with_host_and_build_deps).unwrap();
+
+        let cmake_backend =
+            CMakeBuildBackend::new(&manifest.path, LoggingOutputHandler::default(), None).unwrap();
+
+        let channel_config = ChannelConfig::default_with_root_dir(PathBuf::new());
+
+        let host_platform = Platform::current();
+
+        let reqs = cmake_backend
+            .requirements(host_platform, &channel_config)
+            .unwrap();
+
+        let host_reqs = reqs
+            .host
+            .iter()
+            .map(|d| match d {
+                Dependency::Spec(spec) => spec.to_string(),
+                _ => "".to_string(),
+            })
+            .collect::<Vec<String>>();
+
+        let build_reqs = reqs
+            .build
+            .iter()
+            .map(|d| match d {
+                Dependency::Spec(spec) => spec.to_string(),
+                _ => "".to_string(),
+            })
+            .collect::<Vec<String>>();
+
+        assert!(host_reqs.contains(&"hatchling *".to_string()));
+        assert!(!host_reqs.contains(&"boltons *".to_string()));
+
+        assert!(build_reqs.contains(&"boltons *".to_string()));
+        assert!(!host_reqs.contains(&"hatcling *".to_string()));
     }
 }
