@@ -10,7 +10,7 @@ use chrono::Utc;
 use itertools::Itertools;
 use miette::{Context, IntoDiagnostic};
 use pixi_build_backend::{
-    dependencies::MatchspecExtractor,
+    dependencies::extract_dependencies,
     manifest_ext::ManifestExt,
     protocol::{Protocol, ProtocolFactory},
     utils::TemporaryRenderedRecipe,
@@ -155,24 +155,9 @@ impl CMakeBuildBackend {
             }
         }
 
-        requirements.build = MatchspecExtractor::new(channel_config.clone())
-            .with_ignore_self(true)
-            .extract(build_dependencies)?
-            .into_iter()
-            .map(Dependency::Spec)
-            .collect();
-        requirements.host = MatchspecExtractor::new(channel_config.clone())
-            .with_ignore_self(true)
-            .extract(host_dependencies)?
-            .into_iter()
-            .map(Dependency::Spec)
-            .collect();
-        requirements.run = MatchspecExtractor::new(channel_config.clone())
-            .with_ignore_self(true)
-            .extract(run_dependencies)?
-            .into_iter()
-            .map(Dependency::Spec)
-            .collect();
+        requirements.build = extract_dependencies(channel_config, build_dependencies)?;
+        requirements.host = extract_dependencies(channel_config, host_dependencies)?;
+        requirements.run = extract_dependencies(channel_config, run_dependencies)?;
 
         // Add compilers to the dependencies.
         requirements.build.extend(
@@ -224,16 +209,13 @@ impl CMakeBuildBackend {
             .expect("the project manifest must reside in a directory");
 
         // Parse the package name from the manifest
-        let name = self
+        let package = &self
             .manifest
             .package
             .as_ref()
             .ok_or_else(|| miette::miette!("manifest should contain a [package]"))?
-            .package
-            .name
-            .clone();
-        let name = PackageName::from_str(&name).into_diagnostic()?;
-        let version = self.manifest.version_or_default().clone();
+            .package;
+        let name = PackageName::from_str(&package.name).into_diagnostic()?;
 
         let noarch_type = NoArchType::none();
 
@@ -255,7 +237,7 @@ impl CMakeBuildBackend {
             schema_version: 1,
             context: Default::default(),
             package: Package {
-                version: version.into(),
+                version: package.version.clone().into(),
                 name,
             },
             cache: None,
@@ -589,7 +571,7 @@ impl ProtocolFactory for CMakeBuildBackendFactory {
 mod tests {
 
     use pixi_manifest::Manifest;
-    use rattler_build::{console_utils::LoggingOutputHandler, recipe::parser::Dependency};
+    use rattler_build::console_utils::LoggingOutputHandler;
     use rattler_conda_types::{ChannelConfig, Platform};
     use std::path::PathBuf;
     use tempfile::tempdir;
@@ -617,6 +599,9 @@ mod tests {
         [build-dependencies]
         boltons = "*"
 
+        [run-dependencies]
+        foobar = "3.2.1"
+
         [build-system]
         build-backend = "pixi-build-cmake"
         dependencies = []
@@ -642,28 +627,12 @@ mod tests {
             .requirements(host_platform, &channel_config)
             .unwrap();
 
-        let host_reqs = reqs
-            .host
-            .iter()
-            .map(|d| match d {
-                Dependency::Spec(spec) => spec.to_string(),
-                _ => "".to_string(),
-            })
-            .collect::<Vec<String>>();
+        insta::assert_yaml_snapshot!(reqs, { ".build[1]" => "... compiler ..." });
 
-        let build_reqs = reqs
-            .build
-            .iter()
-            .map(|d| match d {
-                Dependency::Spec(spec) => spec.to_string(),
-                _ => "".to_string(),
-            })
-            .collect::<Vec<String>>();
-
-        assert!(host_reqs.contains(&"hatchling *".to_string()));
-        assert!(!host_reqs.contains(&"boltons *".to_string()));
-
-        assert!(build_reqs.contains(&"boltons *".to_string()));
-        assert!(!host_reqs.contains(&"hatcling *".to_string()));
+        let recipe = cmake_backend.recipe(host_platform, &channel_config);
+        insta::assert_yaml_snapshot!(recipe.unwrap(), {
+           ".build.script" => "[ ... script ... ]",
+           ".requirements.build[1]" => "... compiler ..."
+        });
     }
 }

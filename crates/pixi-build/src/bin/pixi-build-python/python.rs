@@ -10,7 +10,7 @@ use chrono::Utc;
 use itertools::Itertools;
 use miette::{Context, IntoDiagnostic};
 use pixi_build_backend::{
-    dependencies::MatchspecExtractor,
+    dependencies::extract_dependencies,
     manifest_ext::ManifestExt,
     protocol::{Protocol, ProtocolFactory},
     utils::TemporaryRenderedRecipe,
@@ -33,7 +33,7 @@ use rattler_build::{
         BuildConfiguration, Directories, Output, PackagingSettings, PlatformWithVirtualPackages,
     },
     recipe::{
-        parser::{Build, Dependency, Package, PathSource, Requirements, ScriptContent, Source},
+        parser::{Build, Package, PathSource, Requirements, ScriptContent, Source},
         Recipe,
     },
     render::resolved_dependencies::DependencyInfo,
@@ -144,8 +144,8 @@ impl PythonBuildBackend {
         // Ensure python and pip are available in the host dependencies section.
         for pkg_name in [installer.package_name(), "python"] {
             if host_dependencies.contains_key(pkg_name) {
-                // If the host dependencies already contain the package, we don't need to add it
-                // again.
+                // If the host dependencies already contain the package,
+                // we don't need to add it again.
                 continue;
             }
 
@@ -162,24 +162,9 @@ impl PythonBuildBackend {
             }
         }
 
-        requirements.build = MatchspecExtractor::new(channel_config.clone())
-            .with_ignore_self(true)
-            .extract(build_dependencies)?
-            .into_iter()
-            .map(Dependency::Spec)
-            .collect();
-        requirements.host = MatchspecExtractor::new(channel_config.clone())
-            .with_ignore_self(true)
-            .extract(host_dependencies)?
-            .into_iter()
-            .map(Dependency::Spec)
-            .collect();
-        requirements.run = MatchspecExtractor::new(channel_config.clone())
-            .with_ignore_self(true)
-            .extract(run_dependencies)?
-            .into_iter()
-            .map(Dependency::Spec)
-            .collect();
+        requirements.build = extract_dependencies(channel_config, build_dependencies)?;
+        requirements.host = extract_dependencies(channel_config, host_dependencies)?;
+        requirements.run = extract_dependencies(channel_config, run_dependencies)?;
 
         Ok((requirements, installer))
     }
@@ -197,16 +182,14 @@ impl PythonBuildBackend {
             .expect("the project manifest must reside in a directory");
 
         // Parse the package name from the manifest
-        let name = self
+        let package = &self
             .manifest
             .package
             .as_ref()
             .ok_or_else(|| miette::miette!("manifest should contain a [package]"))?
-            .package
-            .name
-            .clone();
-        let name = PackageName::from_str(&name).into_diagnostic()?;
-        let version = self.manifest.version_or_default().clone();
+            .package;
+
+        let name = PackageName::from_str(&package.name).into_diagnostic()?;
 
         // TODO: NoArchType???
         let noarch_type = NoArchType::python();
@@ -229,7 +212,7 @@ impl PythonBuildBackend {
         Ok(Recipe {
             schema_version: 1,
             package: Package {
-                version: version.into(),
+                version: package.version.clone().into(),
                 name,
             },
             context: Default::default(),
@@ -584,7 +567,7 @@ impl ProtocolFactory for PythonBuildBackendFactory {
 mod tests {
 
     use pixi_manifest::Manifest;
-    use rattler_build::{console_utils::LoggingOutputHandler, recipe::parser::Dependency};
+    use rattler_build::console_utils::LoggingOutputHandler;
     use rattler_conda_types::{ChannelConfig, Platform};
     use std::path::PathBuf;
 
@@ -594,8 +577,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_setting_host_and_build_requirements() {
-        // get cargo manifest dir
-
         let package_with_host_and_build_deps = r#"
         [workspace]
         name = "test-reqs"
@@ -605,13 +586,16 @@ mod tests {
 
         [package]
         name = "test-reqs"
-        version = "1.0"
+        version = "1.2.3"
 
         [host-dependencies]
         hatchling = "*"
 
         [build-dependencies]
         boltons = "*"
+
+        [run-dependencies]
+        foobar = ">=3.2.1"
 
         [build-system]
         build-backend = "pixi-build-python"
@@ -638,28 +622,12 @@ mod tests {
             .requirements(host_platform, &channel_config)
             .unwrap();
 
-        let host_reqs = reqs
-            .host
-            .iter()
-            .map(|d| match d {
-                Dependency::Spec(spec) => spec.to_string(),
-                _ => "".to_string(),
-            })
-            .collect::<Vec<String>>();
+        insta::assert_yaml_snapshot!(reqs);
 
-        let build_reqs = reqs
-            .build
-            .iter()
-            .map(|d| match d {
-                Dependency::Spec(spec) => spec.to_string(),
-                _ => "".to_string(),
-            })
-            .collect::<Vec<String>>();
-
-        assert!(host_reqs.contains(&"hatchling *".to_string()));
-        assert!(!host_reqs.contains(&"boltons *".to_string()));
-
-        assert!(build_reqs.contains(&"boltons *".to_string()));
-        assert!(!host_reqs.contains(&"hatcling *".to_string()));
+        let recipe = python_backend.recipe(host_platform, &channel_config);
+        insta::assert_yaml_snapshot!(recipe.unwrap(), {
+            ".source[0].path" => "[ ... path ... ]",
+            ".build.script" => "[ ... script ... ]",
+        });
     }
 }

@@ -1,0 +1,13 @@
+---
+source: crates/pixi-build/src/bin/pixi-build-cmake/cmake.rs
+expression: reqs
+---
+build:
+  - boltons *
+  - "... compiler ..."
+host:
+  - hatchling *
+  - cmake *
+  - ninja *
+run:
+  - foobar ==3.2.1
