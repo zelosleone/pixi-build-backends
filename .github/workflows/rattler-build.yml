@@ -55,6 +55,8 @@ jobs:
         env:
           TARGET_PLATFORM: ${{ matrix.target }}
           RECIPE_VERSION: ${{ needs.generate_version.outputs.version }}
+          RATTLER_BUILD_ENABLE_GITHUB_INTEGRATION: "true"
+          RATTLER_BUILD_COLOR: "always"  
         run: |
           pixi r -e build-self rattler-build build --recipe recipe/recipe.yaml --output-dir=$RUNNER_TEMP --target-platform=${{ env.TARGET_PLATFORM }} --experimental --test native
       - name: Upload all packages
