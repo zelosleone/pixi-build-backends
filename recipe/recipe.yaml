@@ -18,6 +18,7 @@ cache:
     script:
       - if: unix
         then:
+          - export OPENSSL_DIR="$PREFIX"
           - cargo install --locked --root $PREFIX --path crates/pixi-build --no-track --bins
         else:
           - cargo install --locked --root %PREFIX% --path crates/pixi-build --no-track --bins
