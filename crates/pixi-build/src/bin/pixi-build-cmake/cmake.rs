@@ -8,6 +8,7 @@ use std::{
 
 use chrono::Utc;
 use itertools::Itertools;
+use jsonrpc_core::serde_json;
 use miette::{Context, IntoDiagnostic};
 use pixi_build_backend::{
     dependencies::extract_dependencies,
@@ -48,12 +49,14 @@ use reqwest::Url;
 
 use crate::{
     build_script::{BuildPlatform, BuildScriptContext},
+    config::CMakeBackendConfig,
     stub::default_compiler,
 };
 
 pub struct CMakeBuildBackend {
     logging_output_handler: LoggingOutputHandler,
     manifest: Manifest,
+    _config: CMakeBackendConfig,
     cache_dir: Option<PathBuf>,
 }
 
@@ -72,6 +75,7 @@ impl CMakeBuildBackend {
     /// at the given path.
     pub fn new(
         manifest_path: &Path,
+        config: CMakeBackendConfig,
         logging_output_handler: LoggingOutputHandler,
         cache_dir: Option<PathBuf>,
     ) -> miette::Result<Self> {
@@ -82,6 +86,7 @@ impl CMakeBuildBackend {
 
         Ok(Self {
             manifest,
+            _config: config,
             logging_output_handler,
             cache_dir,
         })
@@ -556,8 +561,17 @@ impl ProtocolFactory for CMakeBuildBackendFactory {
         &self,
         params: InitializeParams,
     ) -> miette::Result<(Self::Protocol, InitializeResult)> {
+        let config = if params.configuration.is_null() {
+            CMakeBackendConfig::default()
+        } else {
+            serde_json::from_value(params.configuration)
+                .into_diagnostic()
+                .context("failed to parse backend configuration")?
+        };
+
         let instance = CMakeBuildBackend::new(
             params.manifest_path.as_path(),
+            config,
             self.logging_output_handler.clone(),
             params.cache_directory,
         )?;
@@ -569,14 +583,14 @@ impl ProtocolFactory for CMakeBuildBackendFactory {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
 
     use pixi_manifest::Manifest;
     use rattler_build::console_utils::LoggingOutputHandler;
     use rattler_conda_types::{ChannelConfig, Platform};
-    use std::path::PathBuf;
     use tempfile::tempdir;
 
-    use crate::cmake::CMakeBuildBackend;
+    use crate::{cmake::CMakeBuildBackend, config::CMakeBackendConfig};
 
     #[tokio::test]
     async fn test_setting_host_and_build_requirements() {
@@ -614,8 +628,13 @@ mod tests {
 
         let manifest = Manifest::from_str(&tmp_manifest, package_with_host_and_build_deps).unwrap();
 
-        let cmake_backend =
-            CMakeBuildBackend::new(&manifest.path, LoggingOutputHandler::default(), None).unwrap();
+        let cmake_backend = CMakeBuildBackend::new(
+            &manifest.path,
+            CMakeBackendConfig::default(),
+            LoggingOutputHandler::default(),
+            None,
+        )
+        .unwrap();
 
         let channel_config = ChannelConfig::default_with_root_dir(PathBuf::new());
 
