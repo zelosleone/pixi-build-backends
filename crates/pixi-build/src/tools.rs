@@ -113,7 +113,7 @@ impl RattlerBuild {
 
         if let Some(variant_config_input) = variant_config_input {
             for (k, v) in variant_config_input.iter() {
-                variant_config.variants.insert(k.into(), v.clone());
+                variant_config.variants.insert(k.to_owned(), v.clone());
             }
         }
 
@@ -153,8 +153,8 @@ impl RattlerBuild {
                 allow_undefined: false,
             };
 
-            let recipe =
-                Recipe::from_node(&discovered_output.node, selector_config).map_err(|err| {
+            let recipe = Recipe::from_node(&discovered_output.node, selector_config.clone())
+                .map_err(|err| {
                     let errs: ParseErrors = err
                         .into_iter()
                         .map(|err| ParsingError::from_partial(&self.raw_recipe, err))
