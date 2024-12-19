@@ -34,8 +34,8 @@ use rattler_build::{
         BuildConfiguration, Directories, Output, PackagingSettings, PlatformWithVirtualPackages,
     },
     recipe::{
-        parser::{Build, Dependency, Package, Requirements, ScriptContent},
-        Recipe,
+        parser::{Build, BuildString, Dependency, Package, Requirements, ScriptContent},
+        Jinja, Recipe,
     },
     render::resolved_dependencies::DependencyInfo,
     tool_configuration::Configuration,
@@ -447,6 +447,18 @@ impl Protocol for CMakeBuildBackend {
             })
             .await?;
 
+        let selector_config = output.build_configuration.selector_config();
+
+        let jinja = Jinja::new(selector_config.clone()).with_context(&output.recipe.context);
+
+        let hash = HashInfo::from_variant(output.variant(), output.recipe.build().noarch());
+        let build_string =
+            output
+                .recipe
+                .build()
+                .string()
+                .resolve(&hash, output.recipe.build().number(), &jinja);
+
         let finalized_deps = &output
             .finalized_dependencies
             .as_ref()
@@ -457,7 +469,7 @@ impl Protocol for CMakeBuildBackend {
             packages: vec![CondaPackageMetadata {
                 name: output.name().clone(),
                 version: output.version().clone().into(),
-                build: output.build_string().into_owned(),
+                build: build_string.to_string(),
                 build_number: output.recipe.build.number,
                 subdir: output.build_configuration.target_platform,
                 depends: finalized_deps
@@ -534,8 +546,26 @@ impl Protocol for CMakeBuildBackend {
             .finish();
 
         let temp_recipe = TemporaryRenderedRecipe::from_output(&output)?;
+        let mut output_with_build_string = output.clone();
+
+        let selector_config = output.build_configuration.selector_config();
+
+        let jinja = Jinja::new(selector_config.clone()).with_context(&output.recipe.context);
+
+        let hash = HashInfo::from_variant(output.variant(), output.recipe.build().noarch());
+        let build_string =
+            output
+                .recipe
+                .build()
+                .string()
+                .resolve(&hash, output.recipe.build().number(), &jinja);
+        output_with_build_string.recipe.build.string =
+            BuildString::Resolved(build_string.to_string());
+
         let (output, package) = temp_recipe
-            .within_context_async(move || async move { run_build(output, &tool_config).await })
+            .within_context_async(move || async move {
+                run_build(output_with_build_string, &tool_config).await
+            })
             .await?;
 
         Ok(CondaBuildResult {
@@ -544,7 +574,7 @@ impl Protocol for CMakeBuildBackend {
                 input_globs: input_globs(),
                 name: output.name().as_normalized().to_string(),
                 version: output.version().to_string(),
-                build: output.build_string().into_owned(),
+                build: build_string.to_string(),
                 subdir: output.target_platform().to_string(),
             }],
         })
@@ -653,5 +683,36 @@ mod tests {
            ".build.script" => "[ ... script ... ]",
            ".requirements.build[1]" => "... compiler ..."
         });
+    }
+
+    #[tokio::test]
+    async fn test_parsing_subdirectory() {
+        // a manifest with subdir
+
+        let package_with_git_and_subdir = r#"
+        [workspace]
+        name = "test-reqs"
+        channels = ["conda-forge"]
+        platforms = ["osx-arm64"]
+        preview = ["pixi-build"]
+
+        [package]
+        name = "test-reqs"
+        version = "1.0"
+
+        [build-system]
+        build-backend = { name = "pixi-build-python", version = "*" }
+
+        [host-dependencies]
+        hatchling = { git = "git+https://github.com/hatchling/hatchling.git", subdirectory = "src" }
+        "#;
+
+        let tmp_dir = tempdir().unwrap();
+        let tmp_manifest = tmp_dir.path().join("pixi.toml");
+
+        // write the raw string into the file
+        std::fs::write(&tmp_manifest, package_with_git_and_subdir).unwrap();
+
+        Manifest::from_str(&tmp_manifest, package_with_git_and_subdir).unwrap();
     }
 }
