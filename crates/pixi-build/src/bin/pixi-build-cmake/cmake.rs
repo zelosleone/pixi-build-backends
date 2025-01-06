@@ -127,37 +127,30 @@ impl CMakeBuildBackend {
                 .filter_map(|f| f.dependencies(SpecType::Run).cloned().map(Cow::Owned)),
         );
 
-        let build_dependencies = Dependencies::from(
+        let mut build_dependencies = Dependencies::from(
             targets
                 .iter()
                 .filter_map(|f| f.dependencies(SpecType::Build).cloned().map(Cow::Owned)),
         );
 
-        let mut host_dependencies = Dependencies::from(
+        let host_dependencies = Dependencies::from(
             targets
                 .iter()
                 .filter_map(|f| f.dependencies(SpecType::Host).cloned().map(Cow::Owned)),
         );
 
-        // Ensure build tools are available in the host dependencies section.
+        // Ensure build tools are available in the build dependencies section.
         for pkg_name in ["cmake", "ninja"] {
-            if host_dependencies.contains_key(pkg_name) {
+            if build_dependencies.contains_key(pkg_name) {
                 // If the host dependencies already contain the package, we don't need to add it
                 // again.
                 continue;
             }
 
-            if let Some(run_requirements) = run_dependencies.get(pkg_name) {
-                // Copy the run requirements to the host requirements.
-                for req in run_requirements {
-                    host_dependencies.insert(PackageName::from_str(pkg_name).unwrap(), req.clone());
-                }
-            } else {
-                host_dependencies.insert(
-                    PackageName::from_str(pkg_name).unwrap(),
-                    PixiSpec::default(),
-                );
-            }
+            build_dependencies.insert(
+                PackageName::from_str(pkg_name).unwrap(),
+                PixiSpec::default(),
+            );
         }
 
         requirements.build = extract_dependencies(channel_config, build_dependencies)?;
@@ -672,16 +665,15 @@ mod tests {
 
         let host_platform = Platform::current();
 
-        let reqs = cmake_backend
-            .requirements(host_platform, &channel_config)
-            .unwrap();
-
-        insta::assert_yaml_snapshot!(reqs, { ".build[1]" => "... compiler ..." });
-
         let recipe = cmake_backend.recipe(host_platform, &channel_config);
-        insta::assert_yaml_snapshot!(recipe.unwrap(), {
-           ".build.script" => "[ ... script ... ]",
-           ".requirements.build[1]" => "... compiler ..."
+        insta::with_settings!({
+            filters => vec![
+                ("(vs2017|vs2019|gxx|clang).*", "\"[ ... compiler ... ]\""),
+            ]
+        }, {
+            insta::assert_yaml_snapshot!(recipe.unwrap(), {
+               ".build.script" => "[ ... script ... ]",
+            });
         });
     }
 
