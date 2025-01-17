@@ -102,6 +102,7 @@ impl RattlerBuildBackend {
         BackendCapabilities {
             provides_conda_metadata: Some(true),
             provides_conda_build: Some(true),
+            highest_supported_project_model: None,
         }
     }
 }
@@ -429,6 +430,8 @@ mod tests {
         let factory = RattlerBuildBackend::factory(LoggingOutputHandler::default())
             .initialize(InitializeParams {
                 manifest_path: recipe,
+                project_model: None,
+                configuration: None,
                 cache_directory: None,
             })
             .await
@@ -463,6 +466,8 @@ mod tests {
         let factory = RattlerBuildBackend::factory(LoggingOutputHandler::default())
             .initialize(InitializeParams {
                 manifest_path: recipe,
+                project_model: None,
+                configuration: None,
                 cache_directory: None,
             })
             .await
@@ -501,7 +506,9 @@ mod tests {
     ) -> miette::Result<RattlerBuildBackend> {
         RattlerBuildBackend::factory(LoggingOutputHandler::default())
             .initialize(InitializeParams {
+                project_model: None,
                 manifest_path: manifest_path.as_ref().to_path_buf(),
+                configuration: None,
                 cache_directory: None,
             })
             .await

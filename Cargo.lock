@@ -941,7 +941,16 @@ version = "5.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "44c45a9d03d6676652bcb5e724c7e988de1acad23a711b5217ab9cbecbec2225"
 dependencies = [
- "dirs-sys",
+ "dirs-sys 0.4.1",
+]
+
+[[package]]
+name = "dirs"
+version = "6.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c3e8aa94d75141228480295a7d0e7feb620b1a5ad9f12bc40be62411e38cce4e"
+dependencies = [
+ "dirs-sys 0.5.0",
 ]
 
 [[package]]
@@ -952,8 +961,20 @@ checksum = "520f05a5cbd335fae5a99ff7a6ab8627577660ee5cfd6a94a6a929b52ff0321c"
 dependencies = [
  "libc",
  "option-ext",
- "redox_users",
+ "redox_users 0.4.6",
  "windows-sys 0.48.0",
+]
+
+[[package]]
+name = "dirs-sys"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e01a3366d27ee9890022452ee61b2b63a67e6f13f58900b651ff5665f0bb1fab"
+dependencies = [
+ "libc",
+ "option-ext",
+ "redox_users 0.5.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -1116,7 +1137,7 @@ dependencies = [
 [[package]]
 name = "fancy_display"
 version = "0.1.0"
-source = "git+https://github.com/prefix-dev/pixi?branch=main#7e877c3733447c40ca9b7039e20517e8cd591bb6"
+source = "git+https://github.com/prefix-dev/pixi?branch=main#a0f8317b047e38365140dd0a8b69579fe6900f1e"
 dependencies = [
  "console",
 ]
@@ -1126,17 +1147,6 @@ name = "fastrand"
 version = "2.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "37909eebbb50d72f9059c3b6d82c0463f2ff062c9e95845c43a6c9c0355411be"
-
-[[package]]
-name = "fd-lock"
-version = "4.0.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7e5768da2206272c81ef0b5e951a41862938a6070da63bcea197899942d3b947"
-dependencies = [
- "cfg-if 1.0.0",
- "rustix",
- "windows-sys 0.52.0",
-]
 
 [[package]]
 name = "file_url"
@@ -3074,6 +3084,7 @@ dependencies = [
  "chrono",
  "clap",
  "clap-verbosity-flag",
+ "dirs 6.0.0",
  "fs-err",
  "indexmap 2.7.0",
  "insta",
@@ -3085,6 +3096,7 @@ dependencies = [
  "miette",
  "minijinja",
  "parking_lot 0.12.3",
+ "pixi_build_type_conversions",
  "pixi_build_types",
  "pixi_consts",
  "pixi_manifest",
@@ -3107,12 +3119,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "pixi_build_type_conversions"
+version = "0.1.0"
+source = "git+https://github.com/prefix-dev/pixi?branch=main#a0f8317b047e38365140dd0a8b69579fe6900f1e"
+dependencies = [
+ "indexmap 2.7.0",
+ "itertools 0.13.0",
+ "pixi_build_types",
+ "pixi_manifest",
+ "pixi_spec",
+ "rattler_conda_types",
+]
+
+[[package]]
 name = "pixi_build_types"
 version = "0.1.0"
-source = "git+https://github.com/prefix-dev/pixi?branch=main#7e877c3733447c40ca9b7039e20517e8cd591bb6"
+source = "git+https://github.com/prefix-dev/pixi?branch=main#a0f8317b047e38365140dd0a8b69579fe6900f1e"
 dependencies = [
+ "indexmap 2.7.0",
  "rattler_conda_types",
+ "rattler_digest",
  "serde",
+ "serde_json",
  "serde_with",
  "url",
 ]
@@ -3120,11 +3148,11 @@ dependencies = [
 [[package]]
 name = "pixi_config"
 version = "0.1.0"
-source = "git+https://github.com/prefix-dev/pixi?branch=main#7e877c3733447c40ca9b7039e20517e8cd591bb6"
+source = "git+https://github.com/prefix-dev/pixi?branch=main#a0f8317b047e38365140dd0a8b69579fe6900f1e"
 dependencies = [
  "clap",
  "console",
- "dirs",
+ "dirs 5.0.1",
  "fs-err",
  "itertools 0.13.0",
  "miette",
@@ -3145,7 +3173,7 @@ dependencies = [
 [[package]]
 name = "pixi_consts"
 version = "0.1.0"
-source = "git+https://github.com/prefix-dev/pixi?branch=main#7e877c3733447c40ca9b7039e20517e8cd591bb6"
+source = "git+https://github.com/prefix-dev/pixi?branch=main#a0f8317b047e38365140dd0a8b69579fe6900f1e"
 dependencies = [
  "console",
  "rattler_cache",
@@ -3156,7 +3184,7 @@ dependencies = [
 [[package]]
 name = "pixi_git"
 version = "0.0.1"
-source = "git+https://github.com/prefix-dev/pixi?branch=main#7e877c3733447c40ca9b7039e20517e8cd591bb6"
+source = "git+https://github.com/prefix-dev/pixi?branch=main#a0f8317b047e38365140dd0a8b69579fe6900f1e"
 dependencies = [
  "dashmap",
  "dunce",
@@ -3177,7 +3205,7 @@ dependencies = [
 [[package]]
 name = "pixi_manifest"
 version = "0.1.0"
-source = "git+https://github.com/prefix-dev/pixi?branch=main#7e877c3733447c40ca9b7039e20517e8cd591bb6"
+source = "git+https://github.com/prefix-dev/pixi?branch=main#a0f8317b047e38365140dd0a8b69579fe6900f1e"
 dependencies = [
  "console",
  "dunce",
@@ -3191,7 +3219,6 @@ dependencies = [
  "pixi_consts",
  "pixi_spec",
  "pixi_toml",
- "pixi_utils",
  "pyproject-toml",
  "rattler_conda_types",
  "rattler_virtual_packages",
@@ -3211,9 +3238,9 @@ dependencies = [
 [[package]]
 name = "pixi_spec"
 version = "0.1.0"
-source = "git+https://github.com/prefix-dev/pixi?branch=main#7e877c3733447c40ca9b7039e20517e8cd591bb6"
+source = "git+https://github.com/prefix-dev/pixi?branch=main#a0f8317b047e38365140dd0a8b69579fe6900f1e"
 dependencies = [
- "dirs",
+ "dirs 5.0.1",
  "file_url",
  "itertools 0.13.0",
  "pixi_git",
@@ -3226,6 +3253,7 @@ dependencies = [
  "thiserror 2.0.10",
  "toml-span",
  "toml_edit",
+ "tracing",
  "typed-path",
  "url",
 ]
@@ -3233,7 +3261,7 @@ dependencies = [
 [[package]]
 name = "pixi_toml"
 version = "0.1.0"
-source = "git+https://github.com/prefix-dev/pixi?branch=main#7e877c3733447c40ca9b7039e20517e8cd591bb6"
+source = "git+https://github.com/prefix-dev/pixi?branch=main#a0f8317b047e38365140dd0a8b69579fe6900f1e"
 dependencies = [
  "digest",
  "hex",
@@ -3246,9 +3274,9 @@ dependencies = [
 [[package]]
 name = "pixi_utils"
 version = "0.1.0"
-source = "git+https://github.com/prefix-dev/pixi?branch=main#7e877c3733447c40ca9b7039e20517e8cd591bb6"
+source = "git+https://github.com/prefix-dev/pixi?branch=main#a0f8317b047e38365140dd0a8b69579fe6900f1e"
 dependencies = [
- "fd-lock",
+ "async-fd-lock",
  "fs-err",
  "indicatif",
  "itertools 0.13.0",
@@ -3266,6 +3294,7 @@ dependencies = [
  "serde_yaml",
  "tempfile",
  "thiserror 2.0.10",
+ "tokio",
  "tracing",
  "tracing-subscriber",
  "url",
@@ -3508,7 +3537,7 @@ dependencies = [
  "clap",
  "console",
  "digest",
- "dirs",
+ "dirs 5.0.1",
  "fs-err",
  "futures",
  "humantime",
@@ -3634,7 +3663,7 @@ dependencies = [
  "anyhow",
  "dashmap",
  "digest",
- "dirs",
+ "dirs 5.0.1",
  "fs-err",
  "fs4",
  "futures",
@@ -3662,7 +3691,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f21a09d833d1436694fdd055c6de5c673405c14ca6cc9598419f76643cbb691c"
 dependencies = [
  "chrono",
- "dirs",
+ "dirs 5.0.1",
  "file_url",
  "fs-err",
  "fxhash",
@@ -3745,7 +3774,7 @@ dependencies = [
  "async-trait",
  "base64 0.22.1",
  "chrono",
- "dirs",
+ "dirs 5.0.1",
  "fslock",
  "getrandom",
  "google-cloud-auth",
@@ -3819,7 +3848,7 @@ dependencies = [
  "cache_control",
  "chrono",
  "dashmap",
- "dirs",
+ "dirs 5.0.1",
  "file_url",
  "fs-err",
  "futures",
@@ -3975,6 +4004,17 @@ dependencies = [
  "getrandom",
  "libredox",
  "thiserror 1.0.69",
+]
+
+[[package]]
+name = "redox_users"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dd6f9d3d47bdd2ad6945c5015a226ec6155d0bcdfd8f7cd29f86b71f8de99d2b"
+dependencies = [
+ "getrandom",
+ "libredox",
+ "thiserror 2.0.10",
 ]
 
 [[package]]
