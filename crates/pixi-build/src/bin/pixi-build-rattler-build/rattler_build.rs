@@ -3,8 +3,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use fs_err as fs;
 use miette::IntoDiagnostic;
+use pixi_build_backend::source::Source;
 use pixi_build_types::{BackendCapabilities, FrontendCapabilities};
 use rattler_build::console_utils::LoggingOutputHandler;
 
@@ -12,8 +12,7 @@ pub struct RattlerBuildBackend {
     pub(crate) logging_output_handler: LoggingOutputHandler,
     /// In case of rattler-build, manifest is the raw recipe
     /// We need to apply later the selectors to get the final recipe
-    pub(crate) raw_recipe: String,
-    pub(crate) recipe_path: PathBuf,
+    pub(crate) recipe_source: Source,
     pub(crate) cache_dir: Option<PathBuf>,
 }
 
@@ -50,11 +49,12 @@ impl RattlerBuildBackend {
         };
 
         // Load the manifest from the source directory
-        let raw_recipe = fs::read_to_string(&recipe_path).into_diagnostic()?;
+        let manifest_root = manifest_path.parent().expect("manifest must have a root");
+        let recipe_source =
+            Source::from_rooted_path(manifest_root, recipe_path).into_diagnostic()?;
 
         Ok(Self {
-            raw_recipe,
-            recipe_path,
+            recipe_source,
             logging_output_handler,
             cache_dir,
         })
