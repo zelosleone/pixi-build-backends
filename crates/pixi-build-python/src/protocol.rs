@@ -4,8 +4,7 @@ use miette::{Context, IntoDiagnostic};
 use pixi_build_backend::{
     protocol::{Protocol, ProtocolInstantiator},
     utils::TemporaryRenderedRecipe,
-    variants::can_be_used_as_variant,
-    TargetExt,
+    ProjectModel,
 };
 use pixi_build_types::{
     procedures::{
@@ -16,7 +15,7 @@ use pixi_build_types::{
         initialize::{InitializeParams, InitializeResult},
         negotiate_capabilities::{NegotiateCapabilitiesParams, NegotiateCapabilitiesResult},
     },
-    CondaPackageMetadata, PlatformAndVirtualPackages,
+    BackendCapabilities, CondaPackageMetadata, PlatformAndVirtualPackages,
 };
 // use pixi_build_types as pbt;
 use rattler_build::{
@@ -34,7 +33,7 @@ use rattler_conda_types::{ChannelConfig, MatchSpec, PackageName, Platform};
 use crate::{config::PythonBackendConfig, python::PythonBuildBackend};
 
 #[async_trait::async_trait]
-impl Protocol for PythonBuildBackend {
+impl<P: ProjectModel + Sync> Protocol for PythonBuildBackend<P> {
     async fn conda_get_metadata(
         &self,
         params: CondaMetadataParams,
@@ -51,7 +50,7 @@ impl Protocol for PythonBuildBackend {
             .map(|p| p.platform)
             .unwrap_or(Platform::current());
 
-        let package_name = PackageName::from_str(&self.project_model.name)
+        let package_name = PackageName::from_str(self.project_model.name())
             .into_diagnostic()
             .context("`{name}` is not a valid package name")?;
 
@@ -97,21 +96,7 @@ impl Protocol for PythonBuildBackend {
         };
 
         // Determine the variant keys that are used in the recipe.
-        let used_variants = self
-            .project_model
-            .targets
-            .iter()
-            .flat_map(|target| target.resolve(Some(host_platform)))
-            .flat_map(|dep| {
-                dep.build_dependencies
-                    .iter()
-                    .flatten()
-                    .chain(dep.run_dependencies.iter().flatten())
-                    .chain(dep.host_dependencies.iter().flatten())
-            })
-            .filter(|(_, spec)| can_be_used_as_variant(spec))
-            .map(|(name, _)| name.clone().into())
-            .collect();
+        let used_variants = self.project_model.used_variants(Some(host_platform));
 
         // Determine the combinations of the used variants.
         let combinations = variant_config
@@ -212,7 +197,7 @@ impl Protocol for PythonBuildBackend {
             .map(|p| p.platform)
             .unwrap_or_else(Platform::current);
 
-        let package_name = PackageName::from_str(&self.project_model.name)
+        let package_name = PackageName::from_str(self.project_model.name())
             .into_diagnostic()
             .context("`{name}` is not a valid package name")?;
 
@@ -410,12 +395,10 @@ impl PythonBuildBackendInstantiator {
 
 #[async_trait::async_trait]
 impl ProtocolInstantiator for PythonBuildBackendInstantiator {
-    type ProtocolEndpoint = PythonBuildBackend;
-
     async fn initialize(
         &self,
         params: InitializeParams,
-    ) -> miette::Result<(Self::ProtocolEndpoint, InitializeResult)> {
+    ) -> miette::Result<(Box<dyn Protocol + Send + Sync + 'static>, InitializeResult)> {
         let project_model = params
             .project_model
             .ok_or_else(|| miette::miette!("project model is required"))?;
@@ -440,13 +423,21 @@ impl ProtocolInstantiator for PythonBuildBackendInstantiator {
             params.cache_directory,
         )?;
 
-        Ok((instance, InitializeResult {}))
+        Ok((Box::new(instance), InitializeResult {}))
     }
 
     async fn negotiate_capabilities(
-        params: NegotiateCapabilitiesParams,
+        _params: NegotiateCapabilitiesParams,
     ) -> miette::Result<NegotiateCapabilitiesResult> {
-        let capabilities = Self::ProtocolEndpoint::capabilities(&params.capabilities);
+        // Returns the capabilities of this backend based on the capabilities of
+        // the frontend.
+        let capabilities = BackendCapabilities {
+            provides_conda_metadata: Some(true),
+            provides_conda_build: Some(true),
+            highest_supported_project_model: Some(
+                pixi_build_types::VersionedProjectModel::highest_version(),
+            ),
+        };
         Ok(NegotiateCapabilitiesResult { capabilities })
     }
 }

@@ -3,7 +3,6 @@ use std::path::{Path, PathBuf};
 use clap::{Parser, Subcommand};
 use clap_verbosity_flag::{InfoLevel, Verbosity};
 use miette::{Context, IntoDiagnostic};
-use pixi_build_type_conversions::to_project_model_v1;
 use pixi_build_types::{
     procedures::{
         conda_build::CondaBuildParams,
@@ -12,7 +11,6 @@ use pixi_build_types::{
         negotiate_capabilities::NegotiateCapabilitiesParams,
     },
     BackendCapabilities, ChannelConfiguration, FrontendCapabilities, PlatformAndVirtualPackages,
-    ProjectModelV1,
 };
 use rattler_build::console_utils::{get_default_env_filter, LoggingOutputHandler};
 use rattler_conda_types::{ChannelConfig, GenericVirtualPackage, Platform};
@@ -22,6 +20,7 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use crate::{
     consts,
+    project::to_project_model,
     protocol::{Protocol, ProtocolInstantiator},
     server::Server,
 };
@@ -68,6 +67,7 @@ async fn run_server<T: ProtocolInstantiator>(port: Option<u16>, protocol: T) -> 
     if let Some(port) = port {
         server.run_over_http(port)
     } else {
+        // running over stdin/stdout
         server.run().await
     }
 }
@@ -123,27 +123,11 @@ pub async fn main<T: ProtocolInstantiator, F: FnOnce(LoggingOutputHandler) -> T>
     }
 }
 
-/// Convert manifest to project model
-fn project_model_v1(
-    manifest_path: &Path,
-    channel_config: &ChannelConfig,
-) -> miette::Result<Option<ProjectModelV1>> {
-    // Load the manifest
-    let manifest =
-        pixi_manifest::Manifests::from_workspace_manifest_path(manifest_path.to_path_buf())?;
-    let package = manifest.value.package.as_ref();
-    // This can be null in the rattler-build backend
-    Ok(package.map(|manifest| {
-        to_project_model_v1(&manifest.value, channel_config)
-            .expect("failed to convert manifest to project model")
-    }))
-}
-
 /// Negotiate the capabilities of the backend and initialize the backend.
 async fn initialize<T: ProtocolInstantiator>(
     factory: T,
     manifest_path: &Path,
-) -> miette::Result<T::ProtocolEndpoint> {
+) -> miette::Result<Box<dyn Protocol + Send + Sync + 'static>> {
     // Negotiate the capabilities of the backend.
     let capabilities = capabilities::<T>().await?;
     let channel_config = ChannelConfig::default_with_root_dir(
@@ -152,7 +136,11 @@ async fn initialize<T: ProtocolInstantiator>(
             .expect("manifest should always reside in a directory")
             .to_path_buf(),
     );
-    let project_model = project_model_v1(manifest_path, &channel_config)?;
+    let project_model = to_project_model(
+        manifest_path,
+        &channel_config,
+        capabilities.highest_supported_project_model,
+    )?;
 
     // Check if the project model is required
     // and if it is not present, return an error.
@@ -189,6 +177,7 @@ async fn conda_get_metadata<T: ProtocolInstantiator>(
     );
 
     let protocol = initialize(factory, manifest_path).await?;
+
     let virtual_packages: Vec<_> = VirtualPackage::detect(&VirtualPackageOverrides::from_env())
         .into_diagnostic()?
         .into_iter()

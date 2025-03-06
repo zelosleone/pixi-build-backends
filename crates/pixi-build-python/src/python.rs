@@ -1,15 +1,10 @@
 use std::{collections::BTreeMap, ffi::OsStr, path::PathBuf, str::FromStr};
 
-use indexmap::IndexMap;
-use itertools::Itertools;
 use miette::IntoDiagnostic;
 use pixi_build_backend::{
-    dependencies::extract_dependencies, variants::can_be_used_as_variant, AnyVersion, TargetExt,
+    dependencies::extract_dependencies, traits::project::new_spec, ProjectModel, Targets,
 };
-use pixi_build_types::{
-    self as pbt, BackendCapabilities, FrontendCapabilities, PlatformAndVirtualPackages,
-    ProjectModelV1,
-};
+use pixi_build_types::PlatformAndVirtualPackages;
 use pyproject_toml::PyProjectToml;
 use rattler_build::{
     console_utils::LoggingOutputHandler,
@@ -36,22 +31,22 @@ use crate::{
     config::PythonBackendConfig,
 };
 
-pub struct PythonBuildBackend {
+pub struct PythonBuildBackend<P: ProjectModel> {
     pub(crate) logging_output_handler: LoggingOutputHandler,
     pub(crate) manifest_path: PathBuf,
     pub(crate) manifest_root: PathBuf,
-    pub(crate) project_model: pbt::ProjectModelV1,
+    pub(crate) project_model: P,
     pub(crate) config: PythonBackendConfig,
     pub(crate) cache_dir: Option<PathBuf>,
     pub(crate) pyproject_manifest: Option<PyProjectToml>,
 }
 
-impl PythonBuildBackend {
+impl<P: ProjectModel> PythonBuildBackend<P> {
     /// Returns a new instance of [`PythonBuildBackend`] by reading the manifest
     /// at the given path.
     pub fn new(
         manifest_path: PathBuf,
-        project_model: ProjectModelV1,
+        project_model: P,
         config: PythonBackendConfig,
         logging_output_handler: LoggingOutputHandler,
         cache_dir: Option<PathBuf>,
@@ -88,18 +83,6 @@ impl PythonBuildBackend {
         })
     }
 
-    /// Returns the capabilities of this backend based on the capabilities of
-    /// the frontend.
-    pub fn capabilities(_frontend_capabilities: &FrontendCapabilities) -> BackendCapabilities {
-        BackendCapabilities {
-            provides_conda_metadata: Some(true),
-            provides_conda_build: Some(true),
-            highest_supported_project_model: Some(
-                pixi_build_types::VersionedProjectModel::highest_version(),
-            ),
-        }
-    }
-
     /// Returns the requirements of the project that should be used for a
     /// recipe.
     pub(crate) fn requirements(
@@ -110,59 +93,40 @@ impl PythonBuildBackend {
     ) -> miette::Result<(Requirements, Installer)> {
         let mut requirements = Requirements::default();
 
-        let targets = self
+        let mut dependencies = self
             .project_model
-            .targets
-            .iter()
-            .flat_map(|targets| targets.resolve(Some(host_platform)))
-            .collect_vec();
-
-        let run_dependencies = targets
-            .iter()
-            .flat_map(|t| t.run_dependencies.iter())
-            .flatten()
-            .collect::<IndexMap<&pbt::SourcePackageName, &pbt::PackageSpecV1>>();
-
-        let mut host_dependencies = targets
-            .iter()
-            .flat_map(|t| t.host_dependencies.iter())
-            .flatten()
-            .collect::<IndexMap<&pbt::SourcePackageName, &pbt::PackageSpecV1>>();
-
-        let build_dependencies = targets
-            .iter()
-            .flat_map(|t| t.build_dependencies.iter())
-            .flatten()
-            .collect::<IndexMap<&pbt::SourcePackageName, &pbt::PackageSpecV1>>();
+            .targets()
+            .map(|t| t.dependencies(Some(host_platform)))
+            .unwrap_or_default();
 
         let uv = "uv".to_string();
         // Determine the installer to use
-        let installer = if host_dependencies.contains_key(&uv)
-            || run_dependencies.contains_key(&uv)
-            || build_dependencies.contains_key(&uv)
+        let installer = if dependencies.host.contains_key(&uv)
+            || dependencies.run.contains_key(&uv)
+            || dependencies.build.contains_key(&uv)
         {
             Installer::Uv
         } else {
             Installer::Pip
         };
 
-        let any = pbt::PackageSpecV1::any();
+        let any = new_spec::<P>();
 
         // Ensure python and pip/uv are available in the host dependencies section.
         let installers = [installer.package_name().to_string(), "python".to_string()];
         for pkg_name in installers.iter() {
-            if host_dependencies.contains_key(&pkg_name) {
+            if dependencies.host.contains_key(&pkg_name) {
                 // If the host dependencies already contain the package,
                 // we don't need to add it again.
                 continue;
             }
 
-            host_dependencies.insert(pkg_name, &any);
+            dependencies.host.insert(pkg_name, &any);
         }
 
-        requirements.build = extract_dependencies(channel_config, build_dependencies, variant)?;
-        requirements.host = extract_dependencies(channel_config, host_dependencies, variant)?;
-        requirements.run = extract_dependencies(channel_config, run_dependencies, variant)?;
+        requirements.build = extract_dependencies(channel_config, dependencies.build, variant)?;
+        requirements.host = extract_dependencies(channel_config, dependencies.host, variant)?;
+        requirements.run = extract_dependencies(channel_config, dependencies.run, variant)?;
 
         Ok((requirements, installer))
     }
@@ -207,8 +171,8 @@ impl PythonBuildBackend {
             .unwrap_or(editable);
 
         // Parse the package name and version from the manifest
-        let name = PackageName::from_str(&self.project_model.name).into_diagnostic()?;
-        let version = self.project_model.version.clone().ok_or_else(|| {
+        let name = PackageName::from_str(self.project_model.name()).into_diagnostic()?;
+        let version = self.project_model.version().clone().ok_or_else(|| {
             miette::miette!("a version is missing from the package but it is required")
         })?;
 
@@ -377,21 +341,7 @@ impl PythonBuildBackend {
         };
 
         // Determine the variant keys that are used in the recipe.
-        let used_variants = self
-            .project_model
-            .targets
-            .iter()
-            .flat_map(|target| target.resolve(Some(host_platform)))
-            .flat_map(|dep| {
-                dep.build_dependencies
-                    .iter()
-                    .flatten()
-                    .chain(dep.run_dependencies.iter().flatten())
-                    .chain(dep.host_dependencies.iter().flatten())
-            })
-            .filter(|(_, spec)| can_be_used_as_variant(spec))
-            .map(|(name, _)| name.clone().into())
-            .collect();
+        let used_variants = self.project_model.used_variants(Some(host_platform));
 
         // Determine the combinations of the used variants.
         variant_config
