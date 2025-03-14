@@ -4,30 +4,27 @@ use std::{
     str::FromStr,
 };
 
-use itertools::Itertools;
 use miette::IntoDiagnostic;
 use pixi_build_backend::{
-    dependencies::extract_dependencies, traits::project::new_spec, ProjectModel, Targets,
+    common::{requirements, BuildConfigurationParams},
+    traits::{project::new_spec, Dependencies},
 };
-use pixi_build_types::PlatformAndVirtualPackages;
+use pixi_build_backend::{ProjectModel, Targets};
 use rattler_build::{
     console_utils::LoggingOutputHandler,
     hash::HashInfo,
-    metadata::{BuildConfiguration, Directories, PackagingSettings, PlatformWithVirtualPackages},
+    metadata::{BuildConfiguration, PackagingSettings},
     recipe::{
         parser::{Build, Dependency, Package, Requirements, ScriptContent},
         variable::Variable,
         Recipe,
     },
-    variant_config::VariantConfig,
     NormalizedKey,
 };
 use rattler_conda_types::{
     package::ArchiveType, ChannelConfig, MatchSpec, NoArchType, PackageName, Platform,
 };
 use rattler_package_streaming::write::CompressionLevel;
-use rattler_virtual_packages::VirtualPackageOverrides;
-use reqwest::Url;
 
 use crate::{
     build_script::{BuildPlatform, BuildScriptContext},
@@ -68,50 +65,6 @@ impl<P: ProjectModel> CMakeBuildBackend<P> {
             logging_output_handler,
             cache_dir,
         })
-    }
-
-    /// Returns the requirements of the project that should be used for a
-    /// recipe.
-    fn requirements(
-        &self,
-        host_platform: Platform,
-        channel_config: &ChannelConfig,
-        variant: &BTreeMap<NormalizedKey, Variable>,
-    ) -> miette::Result<Requirements> {
-        let mut requirements = Requirements::default();
-
-        let mut dependencies = self
-            .project_model
-            .targets()
-            .map(|t| t.dependencies(Some(host_platform)))
-            .unwrap_or_default();
-
-        // Ensure build tools are available in the build dependencies section.
-        let build_tools = ["cmake".to_string(), "ninja".to_string()];
-        let empty_spec = new_spec::<P>();
-
-        for pkg_name in build_tools.iter() {
-            if dependencies.build.contains_key(pkg_name) {
-                // If the host dependencies already contain the package, we don't need to add it
-                // again.
-                continue;
-            }
-
-            dependencies.build.insert(pkg_name, &empty_spec);
-        }
-
-        requirements.build = extract_dependencies(channel_config, dependencies.build, variant)?;
-        requirements.host = extract_dependencies(channel_config, dependencies.host, variant)?;
-        requirements.run = extract_dependencies(channel_config, dependencies.run, variant)?;
-
-        // Add compilers to the dependencies.
-        requirements.build.extend(
-            self.compiler_packages(host_platform)
-                .into_iter()
-                .map(Dependency::Spec),
-        );
-
-        Ok(requirements)
     }
 
     /// Returns the matchspecs for the compiler packages. That should be
@@ -159,6 +112,7 @@ impl<P: ProjectModel> CMakeBuildBackend<P> {
         let noarch_type = NoArchType::none();
 
         let requirements = self.requirements(host_platform, channel_config, variant)?;
+
         let build_platform = Platform::current();
         let build_number = 0;
 
@@ -221,89 +175,78 @@ impl<P: ProjectModel> CMakeBuildBackend<P> {
         })
     }
 
-    /// Returns the build configuration for a recipe
-    pub fn build_configuration(
+    pub(crate) fn requirements(
         &self,
-        recipe: &Recipe,
-        channels: Vec<Url>,
-        build_platform: Option<PlatformAndVirtualPackages>,
-        host_platform: Option<PlatformAndVirtualPackages>,
-        variant: BTreeMap<NormalizedKey, Variable>,
-        directories: Directories,
-    ) -> miette::Result<BuildConfiguration> {
-        // Parse the package name from the manifest
-        let build_platform = build_platform.map(|p| PlatformWithVirtualPackages {
-            platform: p.platform,
-            virtual_packages: p.virtual_packages.unwrap_or_default(),
-        });
+        host_platform: Platform,
+        channel_config: &ChannelConfig,
+        variant: &BTreeMap<NormalizedKey, Variable>,
+    ) -> miette::Result<Requirements> {
+        let project_model = &self.project_model;
+        let dependencies = project_model.dependencies(Some(host_platform));
 
-        let host_platform = host_platform.map(|p| PlatformWithVirtualPackages {
-            platform: p.platform,
-            virtual_packages: p.virtual_packages.unwrap_or_default(),
-        });
+        let build_tools = build_tools();
+        let empty_spec = new_spec::<P>();
+        let dependencies = add_build_tools::<P>(dependencies, &build_tools, &empty_spec);
 
-        let (build_platform, host_platform) = match (build_platform, host_platform) {
-            (Some(build_platform), Some(host_platform)) => (build_platform, host_platform),
-            (build_platform, host_platform) => {
-                let current_platform =
-                    PlatformWithVirtualPackages::detect(&VirtualPackageOverrides::from_env())
-                        .into_diagnostic()?;
-                (
-                    build_platform.unwrap_or_else(|| current_platform.clone()),
-                    host_platform.unwrap_or(current_platform),
-                )
-            }
-        };
+        let mut requirements = requirements::<P>(dependencies, channel_config, variant)?;
 
-        let channels = channels.into_iter().map(Into::into).collect_vec();
+        requirements.build.extend(
+            self.compiler_packages(host_platform)
+                .into_iter()
+                .map(Dependency::Spec),
+        );
 
-        Ok(BuildConfiguration {
-            target_platform: host_platform.platform,
-            host_platform,
-            build_platform,
-            hash: HashInfo::from_variant(&variant, &recipe.build.noarch),
-            variant,
-            directories,
-            channels,
-            channel_priority: Default::default(),
-            solve_strategy: Default::default(),
-            timestamp: chrono::Utc::now(),
-            subpackages: Default::default(), // TODO: ???
-            packaging_settings: PackagingSettings::from_args(
-                ArchiveType::Conda,
-                CompressionLevel::default(),
-            ),
-            store_recipe: false,
-            force_colors: true,
-            sandbox_config: None,
-        })
+        Ok(requirements)
+    }
+}
+
+/// Returns the build tools that are required to build the project.
+pub(crate) fn build_tools() -> Vec<String> {
+    vec!["cmake".to_string(), "ninja".to_string()]
+}
+
+/// Adds the build tools to the dependencies.
+pub(crate) fn add_build_tools<'a, P: ProjectModel>(
+    mut dependencies: Dependencies<'a, <P::Targets as Targets>::Spec>,
+    build_tools: &'a [String],
+    empty_spec: &'a <<P as ProjectModel>::Targets as Targets>::Spec,
+) -> Dependencies<'a, <<P as ProjectModel>::Targets as Targets>::Spec> {
+    for pkg_name in build_tools.iter() {
+        if dependencies.build.contains_key(pkg_name) {
+            // If the host dependencies already contain the package, we don't need to add it
+            // again.
+            continue;
+        }
+
+        dependencies.build.insert(pkg_name, empty_spec);
     }
 
-    /// Determine the all the variants that can be built for this package.
-    ///
-    /// The variants are computed based on the dependencies of the package and
-    /// the input variants. Each package that has a `*` as its version we
-    /// consider as a potential variant. If an input variant configuration for
-    /// it exists we add it.
-    pub fn compute_variants(
-        &self,
-        input_variant_configuration: Option<BTreeMap<NormalizedKey, Vec<Variable>>>,
-        host_platform: Platform,
-    ) -> miette::Result<Vec<BTreeMap<NormalizedKey, Variable>>> {
-        // Create a variant config from the variant configuration in the parameters.
-        let variant_config = VariantConfig {
-            variants: input_variant_configuration.unwrap_or_default(),
-            pin_run_as_build: None,
-            zip_keys: None,
-        };
+    dependencies
+}
 
-        // Determine the variant keys that are used in the recipe.
-        let used_variants = self.project_model.used_variants(Some(host_platform));
-
-        // Determine the combinations of the used variants.
-        variant_config
-            .combinations(&used_variants, None)
-            .into_diagnostic()
+pub(crate) fn construct_configuration(
+    recipe: &Recipe,
+    params: BuildConfigurationParams,
+) -> BuildConfiguration {
+    BuildConfiguration {
+        target_platform: params.host_platform.platform,
+        host_platform: params.host_platform,
+        build_platform: params.build_platform,
+        hash: HashInfo::from_variant(&params.variant, &recipe.build.noarch),
+        variant: params.variant,
+        directories: params.directories,
+        channels: params.channels,
+        channel_priority: Default::default(),
+        solve_strategy: Default::default(),
+        timestamp: chrono::Utc::now(),
+        subpackages: Default::default(), // TODO: ???
+        packaging_settings: PackagingSettings::from_args(
+            ArchiveType::Conda,
+            CompressionLevel::default(),
+        ),
+        store_recipe: false,
+        force_colors: true,
+        sandbox_config: None,
     }
 }
 

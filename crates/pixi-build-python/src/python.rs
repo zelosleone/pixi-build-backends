@@ -2,20 +2,20 @@ use std::{collections::BTreeMap, ffi::OsStr, path::PathBuf, str::FromStr};
 
 use miette::IntoDiagnostic;
 use pixi_build_backend::{
-    dependencies::extract_dependencies, traits::project::new_spec, ProjectModel, Targets,
+    common::{requirements, BuildConfigurationParams},
+    traits::{project::new_spec, Dependencies},
+    ProjectModel, Targets,
 };
-use pixi_build_types::PlatformAndVirtualPackages;
 use pyproject_toml::PyProjectToml;
 use rattler_build::{
     console_utils::LoggingOutputHandler,
     hash::HashInfo,
-    metadata::{BuildConfiguration, Directories, PackagingSettings, PlatformWithVirtualPackages},
+    metadata::{BuildConfiguration, PackagingSettings},
     recipe::{
         parser::{Build, Package, PathSource, Python, Requirements, ScriptContent, Source},
         variable::Variable,
         Recipe,
     },
-    variant_config::VariantConfig,
     NormalizedKey,
 };
 use rattler_conda_types::{
@@ -23,8 +23,6 @@ use rattler_conda_types::{
     ChannelConfig, NoArchType, PackageName, Platform,
 };
 use rattler_package_streaming::write::CompressionLevel;
-use rattler_virtual_packages::VirtualPackageOverrides;
-use reqwest::Url;
 
 use crate::{
     build_script::{BuildPlatform, BuildScriptContext, Installer},
@@ -81,54 +79,6 @@ impl<P: ProjectModel> PythonBuildBackend<P> {
             cache_dir,
             pyproject_manifest,
         })
-    }
-
-    /// Returns the requirements of the project that should be used for a
-    /// recipe.
-    pub(crate) fn requirements(
-        &self,
-        host_platform: Platform,
-        channel_config: &ChannelConfig,
-        variant: &BTreeMap<NormalizedKey, Variable>,
-    ) -> miette::Result<(Requirements, Installer)> {
-        let mut requirements = Requirements::default();
-
-        let mut dependencies = self
-            .project_model
-            .targets()
-            .map(|t| t.dependencies(Some(host_platform)))
-            .unwrap_or_default();
-
-        let uv = "uv".to_string();
-        // Determine the installer to use
-        let installer = if dependencies.host.contains_key(&uv)
-            || dependencies.run.contains_key(&uv)
-            || dependencies.build.contains_key(&uv)
-        {
-            Installer::Uv
-        } else {
-            Installer::Pip
-        };
-
-        let any = new_spec::<P>();
-
-        // Ensure python and pip/uv are available in the host dependencies section.
-        let installers = [installer.package_name().to_string(), "python".to_string()];
-        for pkg_name in installers.iter() {
-            if dependencies.host.contains_key(&pkg_name) {
-                // If the host dependencies already contain the package,
-                // we don't need to add it again.
-                continue;
-            }
-
-            dependencies.host.insert(pkg_name, &any);
-        }
-
-        requirements.build = extract_dependencies(channel_config, dependencies.build, variant)?;
-        requirements.host = extract_dependencies(channel_config, dependencies.host, variant)?;
-        requirements.run = extract_dependencies(channel_config, dependencies.run, variant)?;
-
-        Ok((requirements, installer))
     }
 
     /// Read the entry points from the pyproject.toml and return them as a list.
@@ -190,7 +140,7 @@ impl<P: ProjectModel> PythonBuildBackend<P> {
             ..Python::default()
         };
 
-        let (requirements, installer) =
+        let (installer, requirements) =
             self.requirements(host_platform, channel_config, variant)?;
 
         // Create a build script
@@ -262,92 +212,84 @@ impl<P: ProjectModel> PythonBuildBackend<P> {
         })
     }
 
-    /// Returns the build configuration for a recipe
-    pub fn build_configuration(
+    pub(crate) fn requirements(
         &self,
-        recipe: &Recipe,
-        channels: Vec<Url>,
-        build_platform: Option<PlatformAndVirtualPackages>,
-        host_platform: Option<PlatformAndVirtualPackages>,
-        variant: BTreeMap<NormalizedKey, Variable>,
-        directories: Directories,
-    ) -> miette::Result<BuildConfiguration> {
-        let build_platform = build_platform.map(|p| PlatformWithVirtualPackages {
-            platform: p.platform,
-            virtual_packages: p.virtual_packages.unwrap_or_default(),
-        });
-
-        let host_platform = host_platform.map(|p| PlatformWithVirtualPackages {
-            platform: p.platform,
-            virtual_packages: p.virtual_packages.unwrap_or_default(),
-        });
-
-        let (build_platform, host_platform) = match (build_platform, host_platform) {
-            (Some(build_platform), Some(host_platform)) => (build_platform, host_platform),
-            (build_platform, host_platform) => {
-                let current_platform =
-                    rattler_build::metadata::PlatformWithVirtualPackages::detect(
-                        &VirtualPackageOverrides::from_env(),
-                    )
-                    .into_diagnostic()?;
-                (
-                    build_platform.unwrap_or_else(|| current_platform.clone()),
-                    host_platform.unwrap_or(current_platform),
-                )
-            }
-        };
-
-        let channels = channels.into_iter().map(Into::into).collect();
-
-        Ok(BuildConfiguration {
-            // TODO: NoArch??
-            target_platform: Platform::NoArch,
-            host_platform,
-            build_platform,
-            hash: HashInfo::from_variant(&variant, &recipe.build.noarch),
-            variant,
-            directories,
-            channels,
-            channel_priority: Default::default(),
-            solve_strategy: Default::default(),
-            timestamp: chrono::Utc::now(),
-            subpackages: Default::default(), // TODO: ???
-            packaging_settings: PackagingSettings::from_args(
-                ArchiveType::Conda,
-                CompressionLevel::default(),
-            ),
-            store_recipe: false,
-            force_colors: true,
-            sandbox_config: None,
-        })
-    }
-
-    /// Determine the all the variants that can be built for this package.
-    ///
-    /// The variants are computed based on the dependencies of the package and
-    /// the input variants. Each package that has a `*` as its version we
-    /// consider as a potential variant. If an input variant configuration for
-    /// it exists we add it.
-    pub fn compute_variants(
-        &self,
-        input_variant_configuration: Option<BTreeMap<NormalizedKey, Vec<Variable>>>,
         host_platform: Platform,
-    ) -> miette::Result<Vec<BTreeMap<NormalizedKey, Variable>>> {
-        // Create a variant config from the variant configuration in the parameters.
-        let variant_config = VariantConfig {
-            variants: input_variant_configuration.unwrap_or_default(),
-            pin_run_as_build: None,
-            zip_keys: None,
-        };
+        channel_config: &ChannelConfig,
+        variant: &BTreeMap<NormalizedKey, Variable>,
+    ) -> miette::Result<(Installer, Requirements)> {
+        let dependencies = self.project_model.dependencies(Some(host_platform));
 
-        // Determine the variant keys that are used in the recipe.
-        let used_variants = self.project_model.used_variants(Some(host_platform));
+        let empty_spec = new_spec::<P>();
 
-        // Determine the combinations of the used variants.
-        variant_config
-            .combinations(&used_variants, None)
-            .into_diagnostic()
+        let (tool_names, installer) = build_tools::<P>(&dependencies);
+
+        let dependencies = add_build_tools::<P>(dependencies, &tool_names, &empty_spec);
+
+        Ok((
+            installer,
+            requirements::<P>(dependencies, channel_config, variant)?,
+        ))
     }
+}
+
+/// Construct a build configuration for the given recipe and parameters.
+pub(crate) fn construct_configuration(
+    recipe: &Recipe,
+    params: BuildConfigurationParams,
+) -> BuildConfiguration {
+    BuildConfiguration {
+        // TODO: NoArch??
+        target_platform: Platform::NoArch,
+        host_platform: params.host_platform,
+        build_platform: params.build_platform,
+        hash: HashInfo::from_variant(&params.variant, &recipe.build.noarch),
+        variant: params.variant,
+        directories: params.directories,
+        channels: params.channels,
+        channel_priority: Default::default(),
+        solve_strategy: Default::default(),
+        timestamp: chrono::Utc::now(),
+        subpackages: Default::default(), // TODO: ???
+        packaging_settings: PackagingSettings::from_args(
+            ArchiveType::Conda,
+            CompressionLevel::default(),
+        ),
+        store_recipe: false,
+        force_colors: true,
+        sandbox_config: None,
+    }
+}
+
+/// Return the installer to be used and the build tools for the given project model.
+pub(crate) fn build_tools<P: ProjectModel>(
+    dependencies: &Dependencies<<P::Targets as Targets>::Spec>,
+) -> (Vec<String>, Installer) {
+    let installer = Installer::determine_installer::<P>(dependencies);
+
+    (
+        [installer.package_name().to_string(), "python".to_string()].to_vec(),
+        installer,
+    )
+}
+
+/// Add the build tools to the dependencies if they are not already present.
+pub(crate) fn add_build_tools<'a, P: ProjectModel>(
+    mut dependencies: Dependencies<'a, <P::Targets as Targets>::Spec>,
+    build_tools: &'a [String],
+    empty_spec: &'a <<P as ProjectModel>::Targets as Targets>::Spec,
+) -> Dependencies<'a, <<P as ProjectModel>::Targets as Targets>::Spec> {
+    for pkg_name in build_tools.iter() {
+        if dependencies.host.contains_key(pkg_name) {
+            // If the host dependencies already contain the package, we don't need to add it
+            // again.
+            continue;
+        }
+
+        dependencies.host.insert(pkg_name, empty_spec);
+    }
+
+    dependencies
 }
 
 #[cfg(test)]
@@ -356,6 +298,7 @@ mod tests {
     use std::{collections::BTreeMap, path::PathBuf};
 
     use pixi_build_type_conversions::to_project_model_v1;
+
     use pixi_manifest::Manifests;
     use rattler_build::{console_utils::LoggingOutputHandler, recipe::Recipe};
     use rattler_conda_types::{ChannelConfig, Platform};
@@ -483,7 +426,7 @@ mod tests {
         let host_platform = Platform::current();
         let variant = BTreeMap::new();
 
-        let (reqs, _) = python_backend
+        let (_, reqs) = python_backend
             .requirements(host_platform, &channel_config, &variant)
             .unwrap();
 

@@ -2,6 +2,7 @@ use std::{str::FromStr, sync::Arc};
 
 use miette::{Context, IntoDiagnostic};
 use pixi_build_backend::{
+    common::{build_configuration, compute_variants},
     protocol::{Protocol, ProtocolInstantiator},
     utils::TemporaryRenderedRecipe,
     ProjectModel,
@@ -30,7 +31,10 @@ use rattler_build::{
 };
 use rattler_conda_types::{ChannelConfig, MatchSpec, PackageName, Platform};
 
-use crate::{config::PythonBackendConfig, python::PythonBuildBackend};
+use crate::{
+    config::PythonBackendConfig,
+    python::{construct_configuration, PythonBuildBackend},
+};
 
 #[async_trait::async_trait]
 impl<P: ProjectModel + Sync> Protocol for PythonBuildBackend<P> {
@@ -108,15 +112,18 @@ impl<P: ProjectModel + Sync> Protocol for PythonBuildBackend<P> {
         for variant in combinations {
             // TODO: Determine how and if we can determine this from the manifest.
             let recipe = self.recipe(host_platform, &channel_config, false, &variant)?;
+            let build_configuration_params = build_configuration(
+                channels.clone(),
+                params.build_platform.clone(),
+                params.host_platform.clone(),
+                variant.clone(),
+                directories.clone(),
+            )?;
+
+            let build_configuration = construct_configuration(&recipe, build_configuration_params);
+
             let output = Output {
-                build_configuration: self.build_configuration(
-                    &recipe,
-                    channels.clone(),
-                    params.build_platform.clone(),
-                    params.host_platform.clone(),
-                    variant,
-                    directories.clone(),
-                )?,
+                build_configuration,
                 recipe,
                 finalized_dependencies: None,
                 finalized_cache_dependencies: None,
@@ -222,24 +229,28 @@ impl<P: ProjectModel + Sync> Protocol for PythonBuildBackend<P> {
                 })
                 .collect()
         });
-        let variant_combinations =
-            self.compute_variants(input_variant_configuration, host_platform)?;
+        let variant_combinations = compute_variants(
+            &self.project_model,
+            input_variant_configuration,
+            host_platform,
+        )?;
 
         // Compute outputs for each variant
         let mut outputs = Vec::with_capacity(variant_combinations.len());
         for variant in variant_combinations {
             let recipe = self.recipe(host_platform, &channel_config, params.editable, &variant)?;
-            let build_configuration = self.build_configuration(
-                &recipe,
+            let build_configuration_params = build_configuration(
                 channels.clone(),
                 params.host_platform.clone(),
                 Some(PlatformAndVirtualPackages {
                     platform: host_platform,
                     virtual_packages: params.build_platform_virtual_packages.clone(),
                 }),
-                variant,
+                variant.clone(),
                 directories.clone(),
             )?;
+
+            let build_configuration = construct_configuration(&recipe, build_configuration_params);
 
             let mut output = Output {
                 build_configuration,
@@ -431,13 +442,18 @@ impl ProtocolInstantiator for PythonBuildBackendInstantiator {
     ) -> miette::Result<NegotiateCapabilitiesResult> {
         // Returns the capabilities of this backend based on the capabilities of
         // the frontend.
-        let capabilities = BackendCapabilities {
-            provides_conda_metadata: Some(true),
-            provides_conda_build: Some(true),
-            highest_supported_project_model: Some(
-                pixi_build_types::VersionedProjectModel::highest_version(),
-            ),
-        };
-        Ok(NegotiateCapabilitiesResult { capabilities })
+        Ok(NegotiateCapabilitiesResult {
+            capabilities: default_capabilities(),
+        })
+    }
+}
+
+fn default_capabilities() -> BackendCapabilities {
+    BackendCapabilities {
+        provides_conda_metadata: Some(true),
+        provides_conda_build: Some(true),
+        highest_supported_project_model: Some(
+            pixi_build_types::VersionedProjectModel::highest_version(),
+        ),
     }
 }

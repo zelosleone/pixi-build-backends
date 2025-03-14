@@ -14,7 +14,7 @@ use pixi_build_types::{
         initialize::{InitializeParams, InitializeResult},
         negotiate_capabilities::{NegotiateCapabilitiesParams, NegotiateCapabilitiesResult},
     },
-    CondaPackageMetadata, VersionedProjectModel,
+    BackendCapabilities, CondaPackageMetadata, VersionedProjectModel,
 };
 use rattler_build::{
     build::run_build,
@@ -345,11 +345,21 @@ impl ProtocolInstantiator for RattlerBuildBackendInstantiator {
     }
 
     async fn negotiate_capabilities(
-        params: NegotiateCapabilitiesParams,
+        _params: NegotiateCapabilitiesParams,
     ) -> miette::Result<NegotiateCapabilitiesResult> {
         Ok(NegotiateCapabilitiesResult {
-            capabilities: RattlerBuildBackend::capabilities(&params.capabilities),
+            capabilities: default_capabilities(),
         })
+    }
+}
+
+pub(crate) fn default_capabilities() -> BackendCapabilities {
+    BackendCapabilities {
+        provides_conda_metadata: Some(true),
+        provides_conda_build: Some(true),
+        highest_supported_project_model: Some(
+            pixi_build_types::VersionedProjectModel::highest_version(),
+        ),
     }
 }
 
