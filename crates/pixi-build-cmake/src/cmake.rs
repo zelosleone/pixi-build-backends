@@ -7,6 +7,7 @@ use std::{
 use miette::IntoDiagnostic;
 use pixi_build_backend::{
     common::{requirements, BuildConfigurationParams},
+    compilers::default_compiler,
     traits::{project::new_spec, Dependencies},
 };
 use pixi_build_backend::{ProjectModel, Targets};
@@ -29,7 +30,6 @@ use rattler_package_streaming::write::CompressionLevel;
 use crate::{
     build_script::{BuildPlatform, BuildScriptContext},
     config::CMakeBackendConfig,
-    stub::default_compiler,
 };
 
 pub struct CMakeBuildBackend<P: ProjectModel> {

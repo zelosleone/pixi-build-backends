@@ -5,13 +5,14 @@ on:
       - "pixi-build-cmake-v[0-9]+.[0-9]+.[0-9]+"
       - "pixi-build-python-v[0-9]+.[0-9]+.[0-9]+"
       - "pixi-build-rattler-build-v[0-9]+.[0-9]+.[0-9]+"
-  # Run everything but publish on PRs
-  pull_request:
+      - "pixi-build-rust-v[0-9]+.[0-9]+.[0-9]+"
+    # Build all backends on main branch
+    branches: [main]
 
 name: "Build and publish pixi builds backends as conda packages"
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref_name }}-${{ github.event.pull_request.number || github.sha }}
+  group: ${{ github.workflow }}-${{ github.ref_name }}
   cancel-in-progress: true
 
 permissions:
@@ -38,7 +39,6 @@ jobs:
 
           echo "Generated matrix: $MATRIX_JSON"
           echo "version_matrix=$MATRIX_JSON" >> $GITHUB_OUTPUT
-
 
   rattler-build:
     needs: generate-version
@@ -74,7 +74,7 @@ jobs:
           pixi run build-recipe --recipe recipe/${{ matrix.bins.recipe_name }}.yaml --target-platform=${{ env.TARGET_PLATFORM }}
       - name: Upload OSX or Linux packages
         shell: bash
-        if: ${{ github.event_name == 'push' && matrix.bins.os != 'windows-latest' && github.repository == env.REPO_NAME }}
+        if: ${{ startsWith(github.ref, 'refs/tags/v') && matrix.bins.os != 'windows-latest' && github.repository == env.REPO_NAME }}
         run: |
           for file in "$RUNNER_TEMP"/**/*.conda; do
             echo "Uploading ${file}"
@@ -82,7 +82,7 @@ jobs:
           done
       - name: Upload Windows packages
         shell: pwsh
-        if: ${{ github.event_name == 'push' && matrix.bins.os == 'windows-latest' && github.repository == env.REPO_NAME }}
+        if: ${{ startsWith(github.ref, 'refs/tags/v') && matrix.bins.os == 'windows-latest' && github.repository == env.REPO_NAME }}
         run: |
           Get-ChildItem -Path $env:RUNNER_TEMP -Filter *.conda -Recurse | ForEach-Object {
             Write-Host "Uploading $($_.FullName)"
