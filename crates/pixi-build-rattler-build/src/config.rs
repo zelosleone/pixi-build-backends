@@ -6,3 +6,15 @@ use std::path::PathBuf;
 pub struct RattlerBuildBackendConfig {
     pub debug_dir: Option<PathBuf>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::RattlerBuildBackendConfig;
+    use serde_json::json;
+
+    #[test]
+    fn test_ensure_deseralize_from_empty() {
+        let json_data = json!({});
+        serde_json::from_value::<RattlerBuildBackendConfig>(json_data).unwrap();
+    }
+}
