@@ -8,6 +8,7 @@ use indexmap::IndexSet;
 use itertools::Itertools;
 use miette::IntoDiagnostic;
 use pixi_build_types::procedures::conda_metadata::CondaMetadataParams;
+use rattler_build::metadata::Debug;
 use rattler_build::{
     hash::HashInfo,
     metadata::{
@@ -15,15 +16,15 @@ use rattler_build::{
         PlatformWithVirtualPackages,
     },
     recipe::{
-        parser::{find_outputs_from_src, GlobVec},
-        variable::Variable,
         Jinja, ParsingError, Recipe,
+        parser::{GlobVec, find_outputs_from_src},
+        variable::Variable,
     },
     selectors::SelectorConfig,
     system_tools::SystemTools,
     variant_config::{DiscoveredOutput, ParseErrors, VariantConfig},
 };
-use rattler_conda_types::{package::ArchiveType, GenericVirtualPackage, Platform};
+use rattler_conda_types::{GenericVirtualPackage, Platform, package::ArchiveType};
 use rattler_package_streaming::write::CompressionLevel;
 use rattler_virtual_packages::VirtualPackageOverrides;
 use url::Url;
@@ -198,7 +199,7 @@ impl RattlerBuild {
                 recipe.package().name().clone(),
                 PackageIdentifier {
                     name: recipe.package().name().clone(),
-                    version: recipe.package().version().version().clone(),
+                    version: recipe.package().version().version().clone().into(),
                     build_string: recipe
                         .build()
                         .string()
@@ -243,6 +244,7 @@ impl RattlerBuild {
                     store_recipe: false,
                     force_colors: true,
                     sandbox_config: None,
+                    debug: Debug::new(false),
                 },
                 finalized_dependencies: None,
                 finalized_cache_dependencies: None,
