@@ -8,7 +8,6 @@ use fs_err::tokio as tokio_fs;
 use miette::{Context, IntoDiagnostic};
 use pixi_build_backend::{
     protocol::{Protocol, ProtocolInstantiator},
-    source::Source,
     tools::RattlerBuild,
     utils::TemporaryRenderedRecipe,
 };
@@ -196,9 +195,11 @@ impl Protocol for RattlerBuildBackend {
             solved_packages.push(conda);
         }
 
+        let input_globs = Some(Vec::from(["recipe.yaml".to_string()]));
+
         Ok(CondaMetadataResult {
             packages: solved_packages,
-            input_globs: Some(input_globs(&self.recipe_source, None)),
+            input_globs,
         })
     }
 
@@ -318,9 +319,22 @@ impl Protocol for RattlerBuildBackend {
                 })
                 .await?;
 
+            let package_sources = output.finalized_sources.as_ref().map(|package_sources| {
+                package_sources
+                    .iter()
+                    .filter_map(|source| {
+                        if let rattler_build::recipe::parser::Source::Path(path_source) = source {
+                            Some(path_source.path.clone())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect()
+            });
+
             built.push(CondaBuiltPackage {
                 output_file: build_path,
-                input_globs: input_globs(&self.recipe_source, output.finalized_sources.as_ref()),
+                input_globs: build_input_globs(&self.recipe_source.path, package_sources)?,
                 name: output.name().as_normalized().to_string(),
                 version: output.version().to_string(),
                 build: build_string.to_string(),
@@ -331,40 +345,55 @@ impl Protocol for RattlerBuildBackend {
     }
 }
 
-fn input_globs(
-    source: &Source,
-    package_sources: Option<&Vec<rattler_build::recipe::parser::Source>>,
-) -> Vec<String> {
-    let mut input_globs = vec![];
-    let parent = if source.path.is_file() {
+/// Returns the relative path from `base` to `input`, joined by "/".
+pub fn relative_path_joined(
+    base: &std::path::Path,
+    input: &std::path::Path,
+) -> miette::Result<String> {
+    let rel = pathdiff::diff_paths(input, base).ok_or_else(|| {
+        miette::miette!(
+            "could not compute relative path from '{:?}' to '{:?}'",
+            input,
+            base
+        )
+    })?;
+    let joined = rel
+        .components()
+        .map(|c| c.as_os_str().to_string_lossy())
+        .collect::<Vec<_>>()
+        .join("/");
+    Ok(joined)
+}
+
+fn build_input_globs(
+    source: &Path,
+    package_sources: Option<Vec<PathBuf>>,
+) -> miette::Result<Vec<String>> {
+    // Always add the current directory of the package to the globs
+    let mut input_globs = vec!["*/**".to_string()];
+
+    // Get parent directory path
+    let parent = if source.is_file() {
         // use the parent path as glob
-        if let Some(parent) = source.path.parent() {
-            parent.to_path_buf()
-        } else {
-            source.path.clone()
-        }
+        source.parent().unwrap_or(source).to_path_buf()
     } else {
         // use the source path as glob
-        source.path.clone()
+        source.to_path_buf()
     };
 
-    // add the source path as glob
-    input_globs.push(format!("{}/**", parent.display()));
-
+    // If there are sources add them to the globs as well
     if let Some(package_sources) = package_sources {
         for source in package_sources {
-            if let rattler_build::recipe::parser::Source::Path(path_source) = source {
-                // add the package source path as glob
-                if path_source.path.is_dir() {
-                    input_globs.push(format!("{}/**", path_source.path.display()));
-                } else {
-                    input_globs.push(path_source.path.display().to_string());
-                }
+            let source_glob = relative_path_joined(&parent, &source)?;
+            if source.is_dir() {
+                input_globs.push(format!("{}/**", source_glob));
+            } else {
+                input_globs.push(source_glob);
             }
         }
     }
 
-    input_globs
+    Ok(input_globs)
 }
 
 #[async_trait::async_trait]
@@ -589,5 +618,102 @@ mod tests {
                 .path,
             recipe
         );
+    }
+
+    #[test]
+    fn test_relative_path_joined() {
+        use std::path::Path;
+        // Simple case
+        let base = Path::new("/foo/bar");
+        let input = Path::new("/foo/bar/baz/qux.txt");
+        assert_eq!(
+            super::relative_path_joined(base, input).unwrap(),
+            "baz/qux.txt"
+        );
+        // Same path
+        let base = Path::new("/foo/bar");
+        let input = Path::new("/foo/bar");
+        assert_eq!(super::relative_path_joined(base, input).unwrap(), "");
+        // Input not under base
+        let base = Path::new("/foo/bar");
+        let input = Path::new("/foo/other");
+        assert_eq!(
+            super::relative_path_joined(base, input).unwrap(),
+            "../other"
+        );
+        // Relative paths
+        let base = Path::new("foo/bar");
+        let input = Path::new("foo/bar/baz");
+        assert_eq!(super::relative_path_joined(base, input).unwrap(), "baz");
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn test_relative_path_joined_windows() {
+        use std::path::Path;
+        let base = Path::new(r"C:\foo\bar");
+        let input = Path::new(r"C:\foo\bar\baz\qux.txt");
+        assert_eq!(
+            super::relative_path_joined(base, input).unwrap(),
+            "baz/qux.txt"
+        );
+        let base = Path::new(r"C:\foo\bar");
+        let input = Path::new(r"C:\foo\bar");
+        assert_eq!(super::relative_path_joined(base, input).unwrap(), "");
+        let base = Path::new(r"C:\foo\bar");
+        let input = Path::new(r"C:\foo\other");
+        assert_eq!(
+            super::relative_path_joined(base, input).unwrap(),
+            "../other"
+        );
+    }
+
+    #[test]
+    fn test_build_input_globs_with_tempdirs() {
+        use std::fs;
+        use tempfile::tempdir;
+
+        // Create a temp directory to act as the base
+        let base_dir = tempdir().unwrap();
+        let base_path = base_dir.path();
+
+        // Case 1: source is a file in the base dir
+        let recipe_path = base_path.join("recipe.yaml");
+        fs::write(&recipe_path, "fake").unwrap();
+        let globs = super::build_input_globs(&recipe_path, None).unwrap();
+        assert_eq!(globs, vec!["*/**"]);
+
+        // Case 2: source is a directory, with a file and a dir as package sources
+        let pkg_dir = base_path.join("pkg");
+        let pkg_file = pkg_dir.join("file.txt");
+        let pkg_subdir = pkg_dir.join("dir");
+        fs::create_dir_all(&pkg_subdir).unwrap();
+        fs::write(&pkg_file, "fake").unwrap();
+        let globs =
+            super::build_input_globs(base_path, Some(vec![pkg_file.clone(), pkg_subdir.clone()]))
+                .unwrap();
+        assert_eq!(globs, vec!["*/**", "pkg/file.txt", "pkg/dir/**"]);
+    }
+
+    #[test]
+    fn test_build_input_globs_two_folders_in_tempdir() {
+        use std::fs;
+        use tempfile::tempdir;
+
+        // Create a temp directory
+        let temp = tempdir().unwrap();
+        let temp_path = temp.path();
+
+        // Create two folders: source_dir and package_source_dir
+        let source_dir = temp_path.join("source");
+        let package_source_dir = temp_path.join("pkgsrc");
+        fs::create_dir_all(&source_dir).unwrap();
+        fs::create_dir_all(&package_source_dir).unwrap();
+
+        // Call build_input_globs with source_dir as source, and package_source_dir as package source
+        let globs =
+            super::build_input_globs(&source_dir, Some(vec![package_source_dir.clone()])).unwrap();
+        // The relative path from source_dir to package_source_dir should be "../pkgsrc/**"
+        assert_eq!(globs, vec!["*/**", "../pkgsrc/**"]);
     }
 }
