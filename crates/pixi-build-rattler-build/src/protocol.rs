@@ -345,11 +345,9 @@ impl Protocol for RattlerBuildBackend {
     }
 }
 
+#[allow(dead_code)]
 /// Returns the relative path from `base` to `input`, joined by "/".
-pub fn relative_path_joined(
-    base: &std::path::Path,
-    input: &std::path::Path,
-) -> miette::Result<String> {
+fn relative_path_joined(base: &std::path::Path, input: &std::path::Path) -> miette::Result<String> {
     let rel = pathdiff::diff_paths(input, base).ok_or_else(|| {
         miette::miette!(
             "could not compute relative path from '{:?}' to '{:?}'",
@@ -372,6 +370,11 @@ fn build_input_globs(
     // Always add the current directory of the package to the globs
     let mut input_globs = vec!["*/**".to_string()];
 
+    // TODO: Remove this condition when working on https://github.com/prefix-dev/pixi/issues/3785
+    if !source.is_absolute() {
+        return Ok(input_globs);
+    }
+
     // Get parent directory path
     let parent = if source.is_file() {
         // use the parent path as glob
@@ -380,7 +383,6 @@ fn build_input_globs(
         // use the source path as glob
         source.to_path_buf()
     };
-
     // If there are sources add them to the globs as well
     if let Some(package_sources) = package_sources {
         for source in package_sources {
