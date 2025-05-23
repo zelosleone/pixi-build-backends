@@ -11,6 +11,7 @@ use pixi_build_backend::{
     tools::RattlerBuild,
     utils::TemporaryRenderedRecipe,
 };
+use pixi_build_types::procedures::conda_build::CondaOutputIdentifier;
 use pixi_build_types::{
     BackendCapabilities, CondaPackageMetadata,
     procedures::{
@@ -297,6 +298,19 @@ impl Protocol for RattlerBuildBackend {
             .finish();
 
         for output in outputs {
+            if let Some(ids) = &params.outputs {
+                let id = CondaOutputIdentifier {
+                    name: Some(output.name().as_normalized().to_string()),
+                    version: Some(output.version().to_string()),
+                    build: output.recipe.build.string.clone().into(),
+                    subdir: Some(output.target_platform().to_string()),
+                };
+
+                if !ids.contains(&id) {
+                    continue;
+                }
+            }
+
             let temp_recipe = TemporaryRenderedRecipe::from_output(&output)?;
 
             let tool_config = &tool_config;
