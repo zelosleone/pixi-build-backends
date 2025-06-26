@@ -11,17 +11,13 @@ use pixi_build_backend::{
     traits::project::new_spec,
 };
 use rattler_build::metadata::Debug;
+use rattler_build::recipe::Recipe;
 use rattler_build::recipe::parser::BuildString;
 use rattler_build::{
     NormalizedKey,
     console_utils::LoggingOutputHandler,
     hash::HashInfo,
     metadata::{BuildConfiguration, PackagingSettings},
-    recipe::{
-        Recipe,
-        parser::{Build, Dependency, Package, Script, ScriptContent},
-        variable::Variable,
-    },
 };
 use rattler_conda_types::{MatchSpec, NoArchType, PackageName, Platform, package::ArchiveType};
 use rattler_package_streaming::write::CompressionLevel;
@@ -82,7 +78,7 @@ impl<P: ProjectModel> RustBuildBackend<P> {
     pub(crate) fn recipe(
         &self,
         host_platform: Platform,
-        variant: &BTreeMap<NormalizedKey, Variable>,
+        variant: &BTreeMap<NormalizedKey, rattler_build::recipe::variable::Variable>,
     ) -> miette::Result<(Recipe, SourceRequirements<P>)> {
         // Parse the package name and version from the manifest
         let name = PackageName::from_str(self.project_model.name()).into_diagnostic()?;
@@ -115,7 +111,7 @@ impl<P: ProjectModel> RustBuildBackend<P> {
         Ok((
             Recipe {
                 schema_version: 1,
-                package: Package {
+                package: rattler_build::recipe::parser::Package {
                     version: version.into(),
                     name,
                 },
@@ -125,16 +121,18 @@ impl<P: ProjectModel> RustBuildBackend<P> {
                 // include the entire source project and set the source directory
                 // to the root of the package.
                 source: vec![],
-                build: Build {
+                build: rattler_build::recipe::parser::Build {
                     number: build_number,
                     string: BuildString::Resolved(BuildString::compute(&hash_info, build_number)),
-                    script: Script {
-                        content: ScriptContent::Commands(build_script),
+                    script: rattler_build::recipe::parser::Script {
+                        content: rattler_build::recipe::parser::ScriptContent::Commands(
+                            build_script,
+                        ),
                         env: self.config.env.clone(),
                         ..Default::default()
                     },
                     noarch: noarch_type,
-                    ..Build::default()
+                    ..rattler_build::recipe::parser::Build::default()
                 },
                 requirements: requirements.requirements,
                 tests: vec![],
@@ -148,7 +146,7 @@ impl<P: ProjectModel> RustBuildBackend<P> {
     pub(crate) fn requirements(
         &self,
         host_platform: Platform,
-        variant: &BTreeMap<NormalizedKey, Variable>,
+        variant: &BTreeMap<NormalizedKey, rattler_build::recipe::variable::Variable>,
     ) -> miette::Result<(bool, PackageRequirements<P>)> {
         let project_model = &self.project_model;
         let mut sccache_enabled = false;
@@ -169,7 +167,7 @@ impl<P: ProjectModel> RustBuildBackend<P> {
         package_requirements.requirements.build.extend(
             self.compiler_packages(host_platform)
                 .into_iter()
-                .map(Dependency::Spec),
+                .map(rattler_build::recipe::parser::Dependency::Spec),
         );
 
         Ok((sccache_enabled, package_requirements))
@@ -210,14 +208,19 @@ mod tests {
     use std::collections::BTreeMap;
 
     use indexmap::IndexMap;
+
     use pixi_build_type_conversions::to_project_model_v1;
+
 
     use pixi_manifest::Manifests;
     use rattler_build::{console_utils::LoggingOutputHandler, recipe::Recipe};
     use rattler_conda_types::{ChannelConfig, Platform};
+
     use tempfile::tempdir;
 
-    use crate::{config::RustBackendConfig, rust::RustBuildBackend};
+    use crate::{
+        config::RustBackendConfig, rust::RustBuildBackend,
+    };
 
     fn recipe(manifest_source: &str, config: RustBackendConfig) -> Recipe {
         let tmp_dir = tempdir().unwrap();
@@ -228,7 +231,7 @@ mod tests {
         let channel_config = ChannelConfig::default_with_root_dir(tmp_dir.path().to_path_buf());
         let project_model = to_project_model_v1(&package.value, &channel_config).unwrap();
 
-        let python_backend = RustBuildBackend::new(
+        let rust_backend = RustBuildBackend::new(
             tmp_manifest,
             project_model,
             config,
@@ -237,7 +240,7 @@ mod tests {
         )
         .unwrap();
 
-        let (recipe, _) = python_backend
+        let (recipe, _) = rust_backend
             .recipe(Platform::current(), &BTreeMap::new())
             .unwrap();
 

@@ -43,6 +43,7 @@ rattler-build = { version = "*", default-features = false, features = [
   "rustls-tls",
 ] }
 
+
 rattler_conda_types = { version = "0.32.0", default-features = false }
 rattler_package_streaming = { version = "0.22.35", default-features = false }
 rattler_virtual_packages = { version = "2.0.9", default-features = false }
@@ -54,6 +55,10 @@ pixi_spec = { version = "*" }
 pixi_build_type_conversions = { version = "*" }
 
 pixi-build-backend = { path = "crates/pixi-build-backend" }
+
+
+recipe-stage0 = { path = "crates/recipe-stage0" }
+
 
 [patch.crates-io]
 pixi_build_types = { git = "https://github.com/prefix-dev/pixi", branch = "main" }
