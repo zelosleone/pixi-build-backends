@@ -846,8 +846,8 @@ mod tests {
 
     #[test]
     fn test_build_input_globs_includes_extra_globs() {
-        use tempfile::tempdir;
         use std::fs;
+        use tempfile::tempdir;
 
         // Create a temp directory to act as the base
         let base_dir = tempdir().unwrap();
@@ -859,11 +859,16 @@ mod tests {
 
         // Test with extra globs
         let extra_globs = vec!["custom/*.txt".to_string(), "extra/**/*.py".to_string()];
-        let globs = super::build_input_globs(base_path, &recipe_path, None, extra_globs.clone()).unwrap();
+        let globs =
+            super::build_input_globs(base_path, &recipe_path, None, extra_globs.clone()).unwrap();
 
         // Verify that all extra globs are included in the result
         for extra_glob in &extra_globs {
-            assert!(globs.contains(extra_glob), "Result should contain extra glob: {}", extra_glob);
+            assert!(
+                globs.contains(extra_glob),
+                "Result should contain extra glob: {}",
+                extra_glob
+            );
         }
 
         // Verify that the basic manifest glob is still present

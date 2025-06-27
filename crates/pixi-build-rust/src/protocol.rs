@@ -472,7 +472,11 @@ mod tests {
 
         // Verify that all extra globs are included in the result
         for extra_glob in &extra_globs {
-            assert!(result.contains(extra_glob), "Result should contain extra glob: {}", extra_glob);
+            assert!(
+                result.contains(extra_glob),
+                "Result should contain extra glob: {}",
+                extra_glob
+            );
         }
 
         // Verify that default globs are still present
