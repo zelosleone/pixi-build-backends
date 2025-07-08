@@ -1,17 +1,22 @@
-use std::path::{Path, PathBuf};
+use std::{
+    collections::BTreeMap,
+    path::{Path, PathBuf},
+};
 
 use pixi_build_types::ProjectModelV1;
+use rattler_build::{NormalizedKey, recipe::variable::Variable};
 use rattler_conda_types::Platform;
 use recipe_stage0::recipe::{ConditionalList, IntermediateRecipe, Item, Package, Source, Value};
 use serde::de::DeserializeOwned;
 
 use crate::specs_conversion::from_targets_v1_to_conditional_requirements;
 
-/// The trait is responsible of converting a certain [`ProjectModelV1`] (or others in the future)
-/// into an [`IntermediateRecipe`].
+/// The trait is responsible of converting a certain [`ProjectModelV1`] (or
+/// others in the future) into an [`IntermediateRecipe`].
 /// By implementing this trait, you can create a new backend for `pixi-build`.
 ///
-/// It also uses a [`BackendConfig`] to provide additional configuration options.
+/// It also uses a [`BackendConfig`] to provide additional configuration
+/// options.
 ///
 ///
 /// An instance of this trait is used by the [`IntermediateBackend`]
@@ -46,6 +51,17 @@ pub trait GenerateRecipe {
     /// For example, this could be a `Cargo.toml` file for Rust projects.
     fn metadata_input_globs(_config: &Self::Config) -> Vec<String> {
         vec![]
+    }
+
+    /// Returns "default" variants for the given host platform. This allows
+    /// backends to set some default variant configuration that can be
+    /// completely overwritten by the user.
+    ///
+    /// This can be useful to change the default behavior of rattler-build with
+    /// regard to compilers. But it also allows setting up default build
+    /// matrices.
+    fn default_variants(&self, _host_platform: Platform) -> BTreeMap<NormalizedKey, Vec<Variable>> {
+        BTreeMap::new()
     }
 }
 
