@@ -44,7 +44,7 @@ use recipe_stage0::matchspec::{PackageDependency, SerializableMatchSpec};
 use serde::Deserialize;
 
 use crate::{
-    generated_recipe::{BackendConfig, GenerateRecipe},
+    generated_recipe::{BackendConfig, GenerateRecipe, PythonParams},
     protocol::{Protocol, ProtocolInstantiator},
     specs_conversion::from_source_matchspec_into_package_spec,
     tools::{OneOrMultipleOutputs, output_directory},
@@ -210,6 +210,7 @@ where
             &self.config,
             self.source_dir.clone(),
             host_platform,
+            Some(PythonParams { editable: false }),
         )?;
 
         // Convert the recipe to source code.
@@ -485,7 +486,7 @@ where
 
         Ok(CondaMetadataResult {
             packages,
-            input_globs: None,
+            input_globs: Some(generated_recipe.metadata_input_globs),
         })
     }
 
@@ -509,6 +510,9 @@ where
             &self.config,
             self.source_dir.clone(),
             host_platform,
+            Some(PythonParams {
+                editable: params.editable,
+            }),
         )?;
 
         // Convert the recipe to source code.
@@ -622,6 +626,7 @@ where
 
         let timestamp = chrono::Utc::now();
         let mut subpackages = BTreeMap::new();
+
         let mut packages = Vec::new();
         let number_of_outputs = selected_outputs.len();
         for discovered_output in selected_outputs {
@@ -729,7 +734,22 @@ where
                 .within_context_async(move || async move { run_build(output, &tool_config).await })
                 .await?;
 
-            let input_globs = T::build_input_globs(&self.config, &params.work_directory);
+            let input_globs = T::extract_input_globs_from_build(
+                &self.config,
+                &params.work_directory,
+                params.editable,
+            );
+
+            // join it with the files that were read during the recipe generation
+            let input_globs = input_globs
+                .into_iter()
+                .chain(
+                    generated_recipe
+                        .build_input_globs
+                        .iter()
+                        .map(|f| f.to_string()),
+                )
+                .collect::<Vec<_>>();
 
             let built_package = CondaBuiltPackage {
                 output_file: package,

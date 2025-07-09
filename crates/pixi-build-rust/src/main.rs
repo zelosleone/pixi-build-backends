@@ -12,7 +12,7 @@ use miette::IntoDiagnostic;
 use pixi_build_backend::{
     cache::{sccache_envs, sccache_tools},
     compilers::{Language, compiler_requirement},
-    generated_recipe::{GenerateRecipe, GeneratedRecipe},
+    generated_recipe::{GenerateRecipe, GeneratedRecipe, PythonParams},
     intermediate_backend::IntermediateBackendInstantiator,
 };
 use pixi_build_types::ProjectModelV1;
@@ -34,6 +34,7 @@ impl GenerateRecipe for RustGenerator {
         config: &Self::Config,
         manifest_root: PathBuf,
         host_platform: Platform,
+        _python_params: Option<PythonParams>,
     ) -> miette::Result<GeneratedRecipe> {
         let mut generated_recipe =
             GeneratedRecipe::from_model(model.clone(), manifest_root.clone());
@@ -127,7 +128,11 @@ impl GenerateRecipe for RustGenerator {
     }
 
     /// Returns the build input globs used by the backend.
-    fn build_input_globs(config: &Self::Config, _workdir: impl AsRef<Path>) -> Vec<String> {
+    fn extract_input_globs_from_build(
+        config: &Self::Config,
+        _workdir: impl AsRef<Path>,
+        _editable: bool,
+    ) -> Vec<String> {
         [
             "**/*.rs",
             // Cargo configuration files
@@ -166,7 +171,7 @@ mod tests {
             ..Default::default()
         };
 
-        let result = RustGenerator::build_input_globs(&config, PathBuf::new());
+        let result = RustGenerator::extract_input_globs_from_build(&config, PathBuf::new(), false);
 
         // Verify that all extra globs are included in the result
         for extra_glob in &config.extra_input_globs {
@@ -217,6 +222,7 @@ mod tests {
                 &RustBackendConfig::default(),
                 PathBuf::from("."),
                 Platform::Linux64,
+                None,
             )
             .expect("Failed to generate recipe");
 
@@ -257,6 +263,7 @@ mod tests {
                 &RustBackendConfig::default(),
                 PathBuf::from("."),
                 Platform::Linux64,
+                None,
             )
             .expect("Failed to generate recipe");
 
@@ -295,6 +302,7 @@ mod tests {
                 },
                 PathBuf::from("."),
                 Platform::Linux64,
+                None,
             )
             .expect("Failed to generate recipe");
 
@@ -336,6 +344,7 @@ mod tests {
                     },
                     PathBuf::from("."),
                     Platform::Linux64,
+                    None,
                 )
                 .expect("Failed to generate recipe")
         });

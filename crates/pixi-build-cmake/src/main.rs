@@ -8,7 +8,7 @@ use config::CMakeBackendConfig;
 use miette::IntoDiagnostic;
 use pixi_build_backend::{
     compilers::{Language, compiler_requirement, default_compiler},
-    generated_recipe::{GenerateRecipe, GeneratedRecipe},
+    generated_recipe::{GenerateRecipe, GeneratedRecipe, PythonParams},
     intermediate_backend::IntermediateBackendInstantiator,
 };
 use rattler_build::{NormalizedKey, recipe::variable::Variable};
@@ -27,6 +27,7 @@ impl GenerateRecipe for CMakeGenerator {
         config: &Self::Config,
         manifest_root: std::path::PathBuf,
         host_platform: rattler_conda_types::Platform,
+        _python_params: Option<PythonParams>,
     ) -> miette::Result<GeneratedRecipe> {
         let mut generated_recipe =
             GeneratedRecipe::from_model(model.clone(), manifest_root.clone());
@@ -88,7 +89,11 @@ impl GenerateRecipe for CMakeGenerator {
         Ok(generated_recipe)
     }
 
-    fn build_input_globs(config: &Self::Config, _workdir: impl AsRef<Path>) -> Vec<String> {
+    fn extract_input_globs_from_build(
+        config: &Self::Config,
+        _workdir: impl AsRef<Path>,
+        _editable: bool,
+    ) -> Vec<String> {
         [
             // Source files
             "**/*.{c,cc,cxx,cpp,h,hpp,hxx}",
@@ -97,7 +102,7 @@ impl GenerateRecipe for CMakeGenerator {
             "**/CMakeFiles.txt",
         ]
         .iter()
-        .map(|s| s.to_string())
+        .map(|s: &&str| s.to_string())
         .chain(config.extra_input_globs.clone())
         .collect()
     }
@@ -143,7 +148,7 @@ mod tests {
             ..Default::default()
         };
 
-        let result = CMakeGenerator::build_input_globs(&config, PathBuf::new());
+        let result = CMakeGenerator::extract_input_globs_from_build(&config, PathBuf::new(), false);
 
         insta::assert_debug_snapshot!(result);
     }
@@ -181,6 +186,7 @@ mod tests {
                 &CMakeBackendConfig::default(),
                 PathBuf::from("."),
                 Platform::Linux64,
+                None,
             )
             .expect("Failed to generate recipe");
 
@@ -219,6 +225,7 @@ mod tests {
                 },
                 PathBuf::from("."),
                 Platform::Linux64,
+                None,
             )
             .expect("Failed to generate recipe");
 
@@ -259,6 +266,7 @@ mod tests {
                 &CMakeBackendConfig::default(),
                 PathBuf::from("."),
                 Platform::Linux64,
+                None,
             )
             .expect("Failed to generate recipe");
 
@@ -312,6 +320,7 @@ mod tests {
                 &CMakeBackendConfig::default(),
                 PathBuf::from("."),
                 Platform::Linux64,
+                None,
             )
             .expect("Failed to generate recipe");
 

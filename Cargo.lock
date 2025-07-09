@@ -3900,6 +3900,7 @@ dependencies = [
  "rattler_conda_types",
  "rattler_package_streaming",
  "rattler_virtual_packages",
+ "recipe-stage0",
  "reqwest",
  "reqwest-middleware",
  "serde",
