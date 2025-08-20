@@ -227,7 +227,7 @@ impl MetadataProvider for PyprojectMetadataProvider {
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
+    use std::{collections::HashSet, fs};
 
     use pixi_build_backend::generated_recipe::{GenerateRecipe, MetadataProvider};
     use rattler_conda_types::Platform;
@@ -514,6 +514,7 @@ Documentation = "https://docs.example.com"
                 temp_dir.path().to_path_buf(),
                 Platform::Linux64,
                 None,
+                &HashSet::new(),
             )
             .expect("Failed to generate recipe");
 

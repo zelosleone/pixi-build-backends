@@ -1,10 +1,7 @@
 use indexmap::IndexMap;
 use pixi_build_backend::generated_recipe::BackendConfig;
 use serde::{Deserialize, Serialize};
-use std::{
-    convert::identity,
-    path::{Path, PathBuf},
-};
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Default, Deserialize, Serialize, Clone)]
 #[serde(rename_all = "kebab-case", deny_unknown_fields)]
@@ -21,6 +18,9 @@ pub struct PythonBackendConfig {
     /// Extra input globs to include in addition to the default ones
     #[serde(default)]
     pub extra_input_globs: Vec<String>,
+    /// List of compilers to use (e.g., ["c", "cxx", "rust"])
+    /// If not specified, no compilers are added (since most Python packages are pure Python)
+    pub compilers: Option<Vec<String>>,
     /// Ignore the pyproject.toml manifest and rely only on the project model.
     #[serde(default)]
     pub ignore_pyproject_manifest: Option<bool>,
@@ -29,7 +29,7 @@ pub struct PythonBackendConfig {
 impl PythonBackendConfig {
     /// Whether to build a noarch package or a platform-specific package.
     pub fn noarch(&self) -> bool {
-        self.noarch.is_none_or(identity)
+        self.noarch.unwrap_or(true)
     }
 
     /// Creates a new [`PythonBackendConfig`] with default values and
@@ -72,6 +72,10 @@ impl BackendConfig for PythonBackendConfig {
             } else {
                 target_config.extra_input_globs.clone()
             },
+            compilers: target_config
+                .compilers
+                .clone()
+                .or_else(|| self.compilers.clone()),
             ignore_pyproject_manifest: target_config
                 .ignore_pyproject_manifest
                 .or(self.ignore_pyproject_manifest),
@@ -103,6 +107,7 @@ mod tests {
             env: base_env,
             debug_dir: Some(PathBuf::from("/base/debug")),
             extra_input_globs: vec!["*.base".to_string()],
+            compilers: Some(vec!["c".to_string()]),
             ignore_pyproject_manifest: Some(true),
         };
 
@@ -115,6 +120,7 @@ mod tests {
             env: target_env,
             debug_dir: None,
             extra_input_globs: vec!["*.target".to_string()],
+            compilers: Some(vec!["cxx".to_string(), "rust".to_string()]),
             ignore_pyproject_manifest: Some(false),
         };
 
@@ -142,6 +148,11 @@ mod tests {
         // extra_input_globs should be completely overridden
         assert_eq!(merged.extra_input_globs, vec!["*.target".to_string()]);
 
+        // compilers should be completely overridden by target
+        assert_eq!(
+            merged.compilers,
+            Some(vec!["cxx".to_string(), "rust".to_string()])
+        );
         // ignore_pyproject_manifest should use target value
         assert_eq!(merged.ignore_pyproject_manifest, Some(false));
     }
@@ -156,6 +167,7 @@ mod tests {
             env: base_env,
             debug_dir: Some(PathBuf::from("/base/debug")),
             extra_input_globs: vec!["*.base".to_string()],
+            compilers: None,
             ignore_pyproject_manifest: Some(true),
         };
 
@@ -170,6 +182,7 @@ mod tests {
         assert_eq!(merged.env.get("BASE_VAR"), Some(&"base_value".to_string()));
         assert_eq!(merged.debug_dir, Some(PathBuf::from("/base/debug")));
         assert_eq!(merged.extra_input_globs, vec!["*.base".to_string()]);
+        assert_eq!(merged.compilers, None);
         assert_eq!(merged.ignore_pyproject_manifest, Some(true));
     }
 

@@ -1,20 +1,23 @@
 mod build_script;
 mod config;
 
-use std::{collections::BTreeMap, collections::BTreeSet, path::Path, sync::Arc};
-
 use build_script::{BuildPlatform, BuildScriptContext};
 use config::CMakeBackendConfig;
 use miette::IntoDiagnostic;
-use pixi_build_backend::generated_recipe::DefaultMetadataProvider;
 use pixi_build_backend::{
-    compilers::{Language, compiler_requirement, default_compiler},
-    generated_recipe::{GenerateRecipe, GeneratedRecipe, PythonParams},
+    compilers::add_compilers_and_stdlib_to_requirements,
+    generated_recipe::{DefaultMetadataProvider, GenerateRecipe, GeneratedRecipe, PythonParams},
     intermediate_backend::IntermediateBackendInstantiator,
 };
 use rattler_build::{NormalizedKey, recipe::variable::Variable};
 use rattler_conda_types::{PackageName, Platform};
 use recipe_stage0::recipe::{ConditionalRequirements, Script};
+use std::collections::HashSet;
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    path::Path,
+    sync::Arc,
+};
 
 #[derive(Default, Clone)]
 pub struct CMakeGenerator {}
@@ -29,6 +32,7 @@ impl GenerateRecipe for CMakeGenerator {
         manifest_root: std::path::PathBuf,
         host_platform: rattler_conda_types::Platform,
         _python_params: Option<PythonParams>,
+        variants: &HashSet<NormalizedKey>,
     ) -> miette::Result<GeneratedRecipe> {
         let mut generated_recipe =
             GeneratedRecipe::from_model(model.clone(), &mut DefaultMetadataProvider)
@@ -46,22 +50,20 @@ impl GenerateRecipe for CMakeGenerator {
             Some(host_platform),
         );
 
-        // Ensure the compiler function is added to the build requirements
-        // only if a specific compiler is not already present.
-        // TODO: Correctly, we should ask cmake to give us the language used in the
-        // project instead of assuming C++.
-        let language_compiler = default_compiler(&host_platform, &Language::Cxx.to_string());
+        // Get the list of compilers from config, defaulting to ["cxx"] if not specified
+        let compilers = config
+            .compilers
+            .clone()
+            .unwrap_or_else(|| vec!["cxx".to_string()]);
 
-        let build_platform = Platform::current();
-
-        if !resolved_requirements
-            .build
-            .contains_key(&PackageName::new_unchecked(language_compiler))
-        {
-            requirements
-                .build
-                .push(compiler_requirement(&Language::Cxx));
-        }
+        // Add configured compilers to build requirements
+        add_compilers_and_stdlib_to_requirements(
+            &compilers,
+            &mut requirements.build,
+            &resolved_requirements.build,
+            &host_platform,
+            variants,
+        );
 
         // add necessary build tools
         for tool in ["cmake", "ninja"] {
@@ -77,7 +79,7 @@ impl GenerateRecipe for CMakeGenerator {
         let has_host_python = resolved_requirements.contains(&PackageName::new_unchecked("python"));
 
         let build_script = BuildScriptContext {
-            build_platform: if build_platform.is_windows() {
+            build_platform: if Platform::current().is_windows() {
                 BuildPlatform::Windows
             } else {
                 BuildPlatform::Unix
@@ -153,6 +155,7 @@ mod tests {
         procedures::{conda_outputs::CondaOutputsParams, initialize::InitializeParams},
     };
     use rattler_build::console_utils::LoggingOutputHandler;
+    use recipe_stage0::recipe::{Item, Value};
 
     use super::*;
 
@@ -202,6 +205,7 @@ mod tests {
                 PathBuf::from("."),
                 Platform::Linux64,
                 None,
+                &HashSet::new(),
             )
             .expect("Failed to generate recipe");
 
@@ -241,6 +245,7 @@ mod tests {
                 PathBuf::from("."),
                 Platform::Linux64,
                 None,
+                &HashSet::new(),
             )
             .expect("Failed to generate recipe");
 
@@ -257,13 +262,6 @@ mod tests {
             "version": "0.1.0",
             "targets": {
                 "defaultTarget": {
-                    "runDependencies": {
-                        "boltons": {
-                            "binary": {
-                                "version": "*"
-                            }
-                        }
-                    },
                     "hostDependencies": {
                         "python": {
                             "binary": {
@@ -282,6 +280,7 @@ mod tests {
                 PathBuf::from("."),
                 Platform::Linux64,
                 None,
+                &HashSet::new(),
             )
             .expect("Failed to generate recipe");
 
@@ -311,13 +310,6 @@ mod tests {
             "version": "0.1.0",
             "targets": {
                 "defaultTarget": {
-                    "runDependencies": {
-                        "boltons": {
-                            "binary": {
-                                "version": "*"
-                            }
-                        }
-                    },
                     "buildDependencies": {
                         "gxx": {
                             "binary": {
@@ -336,6 +328,7 @@ mod tests {
                 PathBuf::from("."),
                 Platform::Linux64,
                 None,
+                &HashSet::new(),
             )
             .expect("Failed to generate recipe");
 
@@ -389,6 +382,141 @@ mod tests {
                 .map(String::as_str),
             Some("vs2019"),
             "On windows the default cxx_compiler variant should be vs2019"
+        );
+    }
+
+    #[test]
+    fn test_multiple_compilers_configuration() {
+        let project_model = project_fixture!({
+            "name": "foobar",
+            "version": "0.1.0",
+        });
+
+        let generated_recipe = CMakeGenerator::default()
+            .generate_recipe(
+                &project_model,
+                &CMakeBackendConfig {
+                    compilers: Some(vec!["c".to_string(), "cxx".to_string(), "cuda".to_string()]),
+                    ..Default::default()
+                },
+                PathBuf::from("."),
+                Platform::Linux64,
+                None,
+                &HashSet::new(),
+            )
+            .expect("Failed to generate recipe");
+
+        // Check that we have exactly the expected compilers
+        let build_reqs = &generated_recipe.recipe.requirements.build;
+        let compiler_templates: Vec<String> = build_reqs
+            .iter()
+            .filter_map(|item| match item {
+                Item::Value(Value::Template(s)) if s.contains("compiler") => Some(s.clone()),
+                _ => None,
+            })
+            .collect();
+
+        // Should have exactly three compilers
+        assert_eq!(
+            compiler_templates.len(),
+            3,
+            "Should have exactly three compilers"
+        );
+
+        // Check we have the expected compilers
+        assert!(
+            compiler_templates.contains(&"${{ compiler('c') }}".to_string()),
+            "C compiler should be in build requirements"
+        );
+        assert!(
+            compiler_templates.contains(&"${{ compiler('cxx') }}".to_string()),
+            "C++ compiler should be in build requirements"
+        );
+        assert!(
+            compiler_templates.contains(&"${{ compiler('cuda') }}".to_string()),
+            "CUDA compiler should be in build requirements"
+        );
+    }
+
+    #[test]
+    fn test_default_compiler_when_not_specified() {
+        let project_model = project_fixture!({
+            "name": "foobar",
+            "version": "0.1.0",
+        });
+
+        let generated_recipe = CMakeGenerator::default()
+            .generate_recipe(
+                &project_model,
+                &CMakeBackendConfig {
+                    compilers: None,
+                    ..Default::default()
+                },
+                PathBuf::from("."),
+                Platform::Linux64,
+                None,
+                &HashSet::default(),
+            )
+            .expect("Failed to generate recipe");
+
+        // Check that we have exactly the expected compilers and build tools
+        let build_reqs = &generated_recipe.recipe.requirements.build;
+        let compiler_templates: Vec<String> = build_reqs
+            .iter()
+            .filter_map(|item| match item {
+                Item::Value(Value::Template(s)) if s.contains("compiler") => Some(s.clone()),
+                _ => None,
+            })
+            .collect();
+
+        // Should have exactly one compiler: cxx
+        assert_eq!(
+            compiler_templates.len(),
+            1,
+            "Should have exactly one compiler when not specified"
+        );
+        assert_eq!(
+            compiler_templates[0], "${{ compiler('cxx') }}",
+            "Default compiler should be cxx"
+        );
+    }
+
+    #[test]
+    fn test_stdlib_is_added() {
+        let project_model = project_fixture!({
+            "name": "foobar",
+            "version": "0.1.0",
+        });
+
+        let generated_recipe = CMakeGenerator::default()
+            .generate_recipe(
+                &project_model,
+                &CMakeBackendConfig {
+                    compilers: None,
+                    ..Default::default()
+                },
+                PathBuf::from("."),
+                Platform::Linux64,
+                None,
+                &HashSet::from_iter([NormalizedKey("c_stdlib".into())]),
+            )
+            .expect("Failed to generate recipe");
+
+        // Check that we have exactly the expected compilers and build tools
+        let build_reqs = &generated_recipe.recipe.requirements.build;
+        let stdlib_templates: Vec<String> = build_reqs
+            .iter()
+            .filter_map(|item| match item {
+                Item::Value(Value::Template(s)) if s.contains("stdlib") => Some(s.clone()),
+                _ => None,
+            })
+            .collect();
+
+        // Should have exactly one compiler: cxx
+        assert_eq!(stdlib_templates.len(), 1, "Should have exactly one stdlib");
+        assert_eq!(
+            stdlib_templates[0], "${{ stdlib('c') }}",
+            "Default stdlib should be c"
         );
     }
 }

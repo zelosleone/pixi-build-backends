@@ -2,17 +2,12 @@ mod build_script;
 mod config;
 mod metadata;
 
-use std::{
-    collections::BTreeSet,
-    path::{Path, PathBuf},
-    str::FromStr,
-    sync::Arc,
-};
-
 use build_script::{BuildPlatform, BuildScriptContext, Installer};
 use config::PythonBackendConfig;
 use miette::IntoDiagnostic;
+use pixi_build_backend::variants::NormalizedKey;
 use pixi_build_backend::{
+    compilers::add_compilers_and_stdlib_to_requirements,
     generated_recipe::{GenerateRecipe, GeneratedRecipe, PythonParams},
     intermediate_backend::IntermediateBackendInstantiator,
 };
@@ -20,6 +15,13 @@ use pixi_build_types::ProjectModelV1;
 use pyproject_toml::PyProjectToml;
 use rattler_conda_types::{PackageName, Platform, package::EntryPoint};
 use recipe_stage0::recipe::{ConditionalRequirements, NoArchKind, Python, Script};
+use std::collections::HashSet;
+use std::{
+    collections::BTreeSet,
+    path::{Path, PathBuf},
+    str::FromStr,
+    sync::Arc,
+};
 
 use crate::metadata::PyprojectMetadataProvider;
 
@@ -56,6 +58,7 @@ impl GenerateRecipe for PythonGenerator {
         manifest_root: PathBuf,
         host_platform: Platform,
         python_params: Option<PythonParams>,
+        variants: &HashSet<NormalizedKey>,
     ) -> miette::Result<GeneratedRecipe> {
         let params = python_params.unwrap_or_default();
 
@@ -81,8 +84,9 @@ impl GenerateRecipe for PythonGenerator {
         );
 
         // Ensure the python build tools are added to the `host` requirements.
-        // Please note: this is a subtle difference for python, where the build tools are
-        // added to the `host` requirements, while for cmake/rust they are added to the `build` requirements.
+        // Please note: this is a subtle difference for python, where the build tools
+        // are added to the `host` requirements, while for cmake/rust they are
+        // added to the `build` requirements.
         let installer = Installer::determine_installer(&resolved_requirements);
 
         let installer_name = installer.package_name().to_string();
@@ -111,6 +115,17 @@ impl GenerateRecipe for PythonGenerator {
             requirements.run.push("python".parse().into_diagnostic()?);
         }
 
+        // Get the list of compilers from config, defaulting to no compilers for pure
+        // Python packages and add them to the build requirements.
+        let compilers = config.compilers.clone().unwrap_or_default();
+        add_compilers_and_stdlib_to_requirements(
+            &compilers,
+            &mut requirements.build,
+            &resolved_requirements.build,
+            &host_platform,
+            variants,
+        );
+
         let build_platform = Platform::current();
 
         // TODO: remove this env var override as soon as we have profiles
@@ -132,10 +147,20 @@ impl GenerateRecipe for PythonGenerator {
 
         // Determine whether the package should be built as a noarch package or as a
         // generic package.
-        let noarch_kind = if config.noarch() {
+        let has_compilers = !compilers.is_empty();
+        let noarch_kind = if config.noarch == Some(true) {
+            // The user explicitly requested a noarch package.
             Some(NoArchKind::Python)
-        } else {
+        } else if config.noarch == Some(false) {
+            // The user explicitly requested a non-noarch package.
             None
+        } else if has_compilers {
+            // No specific user request, but we have compilers, not a noarch package.
+            None
+        } else {
+            // Otherwise, default to a noarch package.
+            // This is the default behavior for pure Python packages.
+            Some(NoArchKind::Python)
         };
 
         // read pyproject.toml content if it exists
@@ -242,6 +267,7 @@ pub async fn main() {
 #[cfg(test)]
 mod tests {
     use indexmap::IndexMap;
+    use recipe_stage0::recipe::{Item, Value};
 
     use super::*;
 
@@ -304,6 +330,7 @@ mod tests {
                 PathBuf::from("."),
                 Platform::Linux64,
                 None,
+                &HashSet::new(),
             )
             .expect("Failed to generate recipe");
 
@@ -345,6 +372,7 @@ mod tests {
                 PathBuf::from("."),
                 Platform::Linux64,
                 None,
+                &HashSet::new(),
             )
             .expect("Failed to generate recipe");
 
@@ -385,6 +413,7 @@ mod tests {
                 PathBuf::from("."),
                 Platform::Linux64,
                 None,
+                &HashSet::new(),
             )
             .expect("Failed to generate recipe");
 
@@ -392,5 +421,210 @@ mod tests {
         {
             ".content" => "[ ... script ... ]",
         });
+    }
+
+    #[test]
+    fn test_multiple_compilers_configuration() {
+        let project_model = project_fixture!({
+            "name": "foobar",
+            "version": "0.1.0",
+            "targets": {
+                "defaultTarget": {
+                    "runDependencies": {
+                        "boltons": {
+                            "binary": {
+                                "version": "*"
+                            }
+                        }
+                    }
+                },
+            }
+        });
+
+        let generated_recipe = PythonGenerator::default()
+            .generate_recipe(
+                &project_model,
+                &PythonBackendConfig {
+                    compilers: Some(vec!["c".to_string(), "cxx".to_string(), "rust".to_string()]),
+                    ignore_pyproject_manifest: Some(true),
+                    ..Default::default()
+                },
+                PathBuf::from("."),
+                Platform::Linux64,
+                None,
+                &HashSet::new(),
+            )
+            .expect("Failed to generate recipe");
+
+        // Check that we have exactly the expected compilers
+        let build_reqs = &generated_recipe.recipe.requirements.build;
+        let compiler_templates: Vec<String> = build_reqs
+            .iter()
+            .filter_map(|item| match item {
+                Item::Value(Value::Template(s)) if s.contains("compiler") => Some(s.clone()),
+                _ => None,
+            })
+            .collect();
+
+        // Should have exactly three compilers
+        assert_eq!(
+            compiler_templates.len(),
+            3,
+            "Should have exactly three compilers"
+        );
+
+        // Check we have the expected compilers
+        assert!(
+            compiler_templates.contains(&"${{ compiler('c') }}".to_string()),
+            "C compiler should be in build requirements"
+        );
+        assert!(
+            compiler_templates.contains(&"${{ compiler('cxx') }}".to_string()),
+            "C++ compiler should be in build requirements"
+        );
+        assert!(
+            compiler_templates.contains(&"${{ compiler('rust') }}".to_string()),
+            "Rust compiler should be in build requirements"
+        );
+    }
+
+    #[test]
+    fn test_default_no_compilers_when_not_specified() {
+        let project_model = project_fixture!({
+            "name": "foobar",
+            "version": "0.1.0",
+            "targets": {
+                "defaultTarget": {
+                    "runDependencies": {
+                        "boltons": {
+                            "binary": {
+                                "version": "*"
+                            }
+                        }
+                    }
+                },
+            }
+        });
+
+        let generated_recipe = PythonGenerator::default()
+            .generate_recipe(
+                &project_model,
+                &PythonBackendConfig {
+                    compilers: None,
+                    ignore_pyproject_manifest: Some(true),
+                    ..Default::default()
+                },
+                PathBuf::from("."),
+                Platform::Linux64,
+                None,
+                &HashSet::new(),
+            )
+            .expect("Failed to generate recipe");
+
+        // Check that no compilers are added by default
+        let build_reqs = &generated_recipe.recipe.requirements.build;
+        let compiler_templates: Vec<String> = build_reqs
+            .iter()
+            .filter_map(|item| match item {
+                Item::Value(Value::Template(s)) if s.contains("compiler") => Some(s.clone()),
+                _ => None,
+            })
+            .collect();
+
+        // Should have no compilers by default for Python packages
+        assert_eq!(
+            compiler_templates.len(),
+            0,
+            "Should have no compilers by default for pure Python packages"
+        );
+    }
+
+    // Helper function to create a minimal project fixture
+    fn minimal_project() -> ProjectModelV1 {
+        project_fixture!({
+            "name": "foobar",
+            "version": "0.1.0",
+            "targets": {
+                "defaultTarget": {}
+            }
+        })
+    }
+
+    // Helper function to generate recipe with given config
+    fn generate_test_recipe(
+        config: &PythonBackendConfig,
+    ) -> Result<GeneratedRecipe, Box<dyn std::error::Error>> {
+        Ok(PythonGenerator::default().generate_recipe(
+            &minimal_project(),
+            config,
+            PathBuf::from("."),
+            Platform::Linux64,
+            None,
+            &std::collections::HashSet::<pixi_build_backend::variants::NormalizedKey>::new(),
+        )?)
+    }
+
+    #[test]
+    fn test_noarch_defaults_to_true_when_no_compilers() {
+        let recipe = generate_test_recipe(&PythonBackendConfig {
+            ignore_pyproject_manifest: Some(true),
+            ..Default::default()
+        })
+        .expect("Failed to generate recipe");
+
+        assert!(
+            matches!(recipe.recipe.build.noarch, Some(NoArchKind::Python)),
+            "noarch should default to true when no compilers specified"
+        );
+    }
+
+    #[test]
+    fn test_noarch_defaults_to_false_when_compilers_present() {
+        let config = PythonBackendConfig {
+            compilers: Some(vec!["c".to_string()]),
+            ignore_pyproject_manifest: Some(true),
+            ..Default::default()
+        };
+
+        let recipe = generate_test_recipe(&config).expect("Failed to generate recipe");
+
+        assert!(
+            recipe.recipe.build.noarch.is_none(),
+            "noarch should default to false when compilers are present"
+        );
+    }
+
+    #[test]
+    fn test_noarch_explicit_true_overrides_compilers() {
+        let config = PythonBackendConfig {
+            noarch: Some(true),
+            compilers: Some(vec!["c".to_string()]),
+            ignore_pyproject_manifest: Some(true),
+            ..Default::default()
+        };
+
+        let recipe = generate_test_recipe(&config).expect("Failed to generate recipe");
+
+        assert!(
+            matches!(recipe.recipe.build.noarch, Some(NoArchKind::Python)),
+            "explicit noarch=true should override compiler presence"
+        );
+    }
+
+    #[test]
+    fn test_noarch_explicit_false_overrides_no_compilers() {
+        let config = PythonBackendConfig {
+            noarch: Some(false),
+            compilers: None,
+            ignore_pyproject_manifest: Some(true),
+            ..Default::default()
+        };
+
+        let recipe = generate_test_recipe(&config).expect("Failed to generate recipe");
+
+        assert!(
+            recipe.recipe.build.noarch.is_none(),
+            "explicit noarch=false should override absence of compilers"
+        );
     }
 }

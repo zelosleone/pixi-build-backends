@@ -2,27 +2,28 @@ mod build_script;
 mod config;
 mod metadata;
 
-use std::{
-    collections::{BTreeSet, HashMap},
-    path::{Path, PathBuf},
-    sync::Arc,
-};
-
 use build_script::BuildScriptContext;
 use config::RustBackendConfig;
 use metadata::CargoMetadataProvider;
 use miette::IntoDiagnostic;
+use pixi_build_backend::variants::NormalizedKey;
 use pixi_build_backend::{
     cache::{sccache_envs, sccache_tools},
-    compilers::{Language, compiler_requirement},
+    compilers::add_compilers_and_stdlib_to_requirements,
     generated_recipe::{GenerateRecipe, GeneratedRecipe, PythonParams},
     intermediate_backend::IntermediateBackendInstantiator,
 };
 use pixi_build_types::ProjectModelV1;
-use rattler_conda_types::{PackageName, Platform};
+use rattler_conda_types::Platform;
 use recipe_stage0::{
     matchspec::PackageDependency,
     recipe::{ConditionalRequirements, Item, Script},
+};
+use std::collections::HashSet;
+use std::{
+    collections::{BTreeSet, HashMap},
+    path::{Path, PathBuf},
+    sync::Arc,
 };
 
 #[derive(Default, Clone)]
@@ -38,6 +39,7 @@ impl GenerateRecipe for RustGenerator {
         manifest_root: PathBuf,
         host_platform: Platform,
         _python_params: Option<PythonParams>,
+        variants: &HashSet<NormalizedKey>,
     ) -> miette::Result<GeneratedRecipe> {
         // Construct a CargoMetadataProvider to read the Cargo.toml file
         // and extract metadata from it.
@@ -51,8 +53,6 @@ impl GenerateRecipe for RustGenerator {
             GeneratedRecipe::from_model(model.clone(), &mut cargo_metadata).into_diagnostic()?;
 
         // we need to add compilers
-        let compiler_function = compiler_requirement(&Language::Rust);
-
         let requirements = &mut generated_recipe.recipe.requirements;
 
         let resolved_requirements = ConditionalRequirements::resolve(
@@ -63,15 +63,21 @@ impl GenerateRecipe for RustGenerator {
             Some(host_platform),
         );
 
-        // Ensure the compiler function is added to the build requirements
-        // only if it is not already present.
+        // Get the list of compilers from config, defaulting to ["rust"] if not
+        // specified
+        let compilers = config
+            .compilers
+            .clone()
+            .unwrap_or_else(|| vec!["rust".to_string()]);
 
-        if !resolved_requirements
-            .build
-            .contains_key(&PackageName::new_unchecked(Language::Rust.to_string()))
-        {
-            requirements.build.push(compiler_function.clone());
-        }
+        // Add configured compilers to build requirements
+        add_compilers_and_stdlib_to_requirements(
+            &compilers,
+            &mut requirements.build,
+            &resolved_requirements.build,
+            &host_platform,
+            variants,
+        );
 
         let has_openssl = resolved_requirements.contains(&"openssl".parse().into_diagnostic()?);
 
@@ -187,6 +193,7 @@ pub async fn main() {
 mod tests {
     use cargo_toml::Manifest;
     use indexmap::IndexMap;
+    use recipe_stage0::recipe::{Item, Value};
 
     use super::*;
 
@@ -249,6 +256,7 @@ mod tests {
                 PathBuf::from("."),
                 Platform::Linux64,
                 None,
+                &HashSet::new(),
             )
             .expect("Failed to generate recipe");
 
@@ -290,6 +298,7 @@ mod tests {
                 PathBuf::from("."),
                 Platform::Linux64,
                 None,
+                &HashSet::new(),
             )
             .expect("Failed to generate recipe");
 
@@ -330,6 +339,7 @@ mod tests {
                 PathBuf::from("."),
                 Platform::Linux64,
                 None,
+                &HashSet::new(),
             )
             .expect("Failed to generate recipe");
 
@@ -373,6 +383,7 @@ mod tests {
                     PathBuf::from("."),
                     Platform::Linux64,
                     None,
+                    &HashSet::new(),
                 )
                 .expect("Failed to generate recipe")
         });
@@ -405,6 +416,7 @@ mod tests {
                 std::env::current_dir().unwrap(),
                 Platform::Linux64,
                 None,
+                &HashSet::new(),
             )
             .expect("Failed to generate recipe");
 
@@ -500,6 +512,7 @@ mod tests {
             PathBuf::from("/non/existent/path"),
             Platform::Linux64,
             None,
+            &std::collections::HashSet::new(),
         );
 
         // Should fail when trying to read Cargo.toml from non-existent path
@@ -526,10 +539,131 @@ mod tests {
             std::env::current_dir().unwrap(),
             Platform::Linux64,
             None,
+            &std::collections::HashSet::new(),
         );
 
         assert!(result.is_err());
         let error_message = result.err().unwrap().to_string();
         assert!(error_message.contains("no name defined"));
+    }
+
+    #[test]
+    fn test_multiple_compilers_configuration() {
+        let project_model = project_fixture!({
+            "name": "foobar",
+            "version": "0.1.0",
+            "targets": {
+                "defaultTarget": {
+                    "runDependencies": {
+                        "boltons": {
+                            "binary": {
+                                "version": "*"
+                            }
+                        }
+                    }
+                },
+            }
+        });
+
+        let generated_recipe = RustGenerator::default()
+            .generate_recipe(
+                &project_model,
+                &RustBackendConfig {
+                    compilers: Some(vec!["rust".to_string(), "c".to_string(), "cxx".to_string()]),
+                    ignore_cargo_manifest: Some(true),
+                    ..Default::default()
+                },
+                PathBuf::from("."),
+                Platform::Linux64,
+                None,
+                &HashSet::new(),
+            )
+            .expect("Failed to generate recipe");
+
+        // Check that we have exactly the expected compilers
+        let build_reqs = &generated_recipe.recipe.requirements.build;
+        let compiler_templates: Vec<String> = build_reqs
+            .iter()
+            .filter_map(|item| match item {
+                Item::Value(Value::Template(s)) if s.contains("compiler") => Some(s.clone()),
+                _ => None,
+            })
+            .collect();
+
+        // Should have exactly three compilers
+        assert_eq!(
+            compiler_templates.len(),
+            3,
+            "Should have exactly three compilers"
+        );
+
+        // Check we have the expected compilers
+        assert!(
+            compiler_templates.contains(&"${{ compiler('rust') }}".to_string()),
+            "Rust compiler should be in build requirements"
+        );
+        assert!(
+            compiler_templates.contains(&"${{ compiler('c') }}".to_string()),
+            "C compiler should be in build requirements"
+        );
+        assert!(
+            compiler_templates.contains(&"${{ compiler('cxx') }}".to_string()),
+            "C++ compiler should be in build requirements"
+        );
+    }
+
+    #[test]
+    fn test_default_compiler_when_not_specified() {
+        let project_model = project_fixture!({
+            "name": "foobar",
+            "version": "0.1.0",
+            "targets": {
+                "defaultTarget": {
+                    "runDependencies": {
+                        "boltons": {
+                            "binary": {
+                                "version": "*"
+                            }
+                        }
+                    }
+                },
+            }
+        });
+
+        let generated_recipe = RustGenerator::default()
+            .generate_recipe(
+                &project_model,
+                &RustBackendConfig {
+                    compilers: None,
+                    ignore_cargo_manifest: Some(true),
+                    ..Default::default()
+                },
+                PathBuf::from("."),
+                Platform::Linux64,
+                None,
+                &HashSet::new(),
+            )
+            .expect("Failed to generate recipe");
+
+        // Check that we have exactly the expected compilers and build tools
+        let build_reqs = &generated_recipe.recipe.requirements.build;
+        let compiler_templates: Vec<String> = build_reqs
+            .iter()
+            .filter_map(|item| match item {
+                Item::Value(Value::Template(s)) if s.contains("compiler") => Some(s.clone()),
+                _ => None,
+            })
+            .collect();
+
+        // Should have exactly one compiler: rust
+        assert_eq!(
+            compiler_templates.len(),
+            1,
+            "Should have exactly one compiler when not specified"
+        );
+        assert_eq!(
+            compiler_templates[0], "${{ compiler('rust') }}",
+            "Default compiler should be rust"
+        );
     }
 }

@@ -1,9 +1,16 @@
-//! We could expose the `default_compiler` function from the `rattler-build` crate
+//! We could expose the `default_compiler` function from the `rattler-build`
+//! crate
 
-use std::fmt::Display;
+use std::{collections::HashSet, fmt::Display, ops::Deref};
 
-use rattler_conda_types::Platform;
-use recipe_stage0::{matchspec::PackageDependency, recipe::Item};
+use indexmap::IndexMap;
+use itertools::Itertools;
+use rattler_build::NormalizedKey;
+use rattler_conda_types::{PackageName, Platform};
+use recipe_stage0::{
+    matchspec::PackageDependency,
+    recipe::{Item, Value},
+};
 
 pub enum Language<'a> {
     C,
@@ -69,10 +76,91 @@ pub fn compiler_requirement(language: &Language) -> Item<PackageDependency> {
         .expect("Failed to parse compiler requirement")
 }
 
+/// Add configured compilers to build requirements if they are not already
+/// present.
+///
+/// # Arguments
+/// * `compilers` - List of compiler names (e.g., ["c", "cxx", "rust", "cuda"])
+/// * `requirements` - Mutable reference to the requirements to modify
+/// * `resolved_build_requirements` - IndexMap of already resolved build
+///   requirements
+/// * `host_platform` - The target platform for determining default compiler
+///   names
+/// * `variants` - The variants available in the recipe, used to determine if
+///   stdlib is needed
+pub fn add_compilers_and_stdlib_to_requirements(
+    compilers: &[String],
+    requirements: &mut Vec<Item<PackageDependency>>,
+    resolved_build_requirements: &IndexMap<PackageName, PackageDependency>,
+    host_platform: &Platform,
+    variants: &HashSet<NormalizedKey>,
+) {
+    add_compilers_to_requirements(
+        compilers,
+        requirements,
+        resolved_build_requirements,
+        host_platform,
+    );
+    add_stdlib_to_requirements(compilers, requirements, variants);
+}
+
+pub fn add_compilers_to_requirements(
+    compilers: &[String],
+    requirements: &mut Vec<Item<PackageDependency>>,
+    resolved_build_requirements: &IndexMap<PackageName, PackageDependency>,
+    host_platform: &Platform,
+) {
+    for compiler_str in compilers {
+        // Check if the specific compiler is already present
+        let language_compiler = default_compiler(host_platform, compiler_str);
+
+        if !resolved_build_requirements.contains_key(&PackageName::new_unchecked(language_compiler))
+        {
+            let template = format!("${{{{ compiler('{}') }}}}", compiler_str);
+            requirements.push(Item::Value(Value::Template(template)));
+        }
+    }
+}
+
+/// Returns the standard library for a given language, if applicable.
+///
+/// The implementation just always returns `c` for all languages except for some
+/// exceptions.
+fn stdlib_for_language(lang: &str) -> Option<&'static str> {
+    match lang {
+        "go-nocgo" => None,
+        _ => Some("c"),
+    }
+}
+
+pub fn add_stdlib_to_requirements(
+    compilers: &[String],
+    requirements: &mut Vec<Item<PackageDependency>>,
+    variants: &HashSet<NormalizedKey>,
+) {
+    // For each compiler check if there is a variant stdlib(compiler) key.
+    for stdlib in compilers
+        .iter()
+        .map(Deref::deref)
+        .filter_map(stdlib_for_language)
+        .unique()
+    {
+        let stdlib_key = format!("{stdlib}_stdlib");
+        if !variants.contains(&NormalizedKey(stdlib_key)) {
+            continue;
+        }
+
+        // If the stdlib key exists, add it to the requirements
+        let template = format!("${{{{ stdlib('{}') }}}}", stdlib);
+        requirements.push(Item::Value(Value::Template(template)));
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::*;
     use insta::assert_yaml_snapshot;
+
+    use super::*;
 
     #[test]
     fn test_compiler_requirements_fortran() {
